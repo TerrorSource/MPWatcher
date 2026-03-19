@@ -51,7 +51,7 @@ version: "3.8"
 
 services:
   mpwatchter:
-    image: makooy/mpwatchter:latest
+    image: ghcr.io/terrorsource/mpwatchter:latest
     container_name: mpwatchter
     restart: unless-stopped
     network_mode: bridge
