@@ -136,3 +136,24 @@ def test_results_dedup_across_keywords(client):
 
     client.post(f"/keyword/{kid_a}/delete")
     client.post(f"/keyword/{kid_b}/delete")
+
+
+def test_migration_preserves_keyword_ids(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(app, "DB_FILE", tmp_path / "results.db")
+    monkeypatch.setattr(app, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(app, "KEYWORDS_FILE", tmp_path / "keywords.json")
+
+    # Niet-opeenvolgende ids, zoals na verwijderde zoekwoorden in oude versies
+    (tmp_path / "keywords.json").write_text(json.dumps([
+        {"id": 2, "term": "alfa", "last_run_at": "Nooit"},
+        {"id": 7, "term": "beta", "last_run_at": "2025-12-01T10:00:00"},
+        {"id": 7, "term": "dubbel-id", "last_run_at": "Nooit"},
+    ]), encoding="utf-8")
+
+    app.init_db()
+    kws = {k["term"]: k for k in app.load_keywords()}
+    assert kws["alfa"]["id"] == 2
+    assert kws["beta"]["id"] == 7
+    assert kws["dubbel-id"]["id"] not in (2, 7)  # botsende id krijgt een nieuwe
+    assert kws["beta"]["last_run_at"] == "2025-12-01T10:00:00"

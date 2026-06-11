@@ -197,15 +197,25 @@ def _import_legacy_json(conn: sqlite3.Connection) -> None:
 
         has_keywords = conn.execute("SELECT 1 FROM keywords LIMIT 1").fetchone()
         if isinstance(data, list) and not has_keywords:
+            # Behoud de oorspronkelijke ids: de bestaande resultaten in de
+            # database verwijzen via keyword_id naar deze ids. Zonder dit
+            # raken zoekwoorden losgekoppeld van hun historie.
             rows = []
+            seen_ids: set[int] = set()
             for item in data:
                 if not isinstance(item, dict):
                     item = {"term": str(item)}
                 term = (item.get("term") or "").strip()
                 if not term:
                     continue
+                old_id = _int_or_none(item.get("id"))
+                if old_id in seen_ids:
+                    old_id = None  # dubbele id -> laat sqlite een nieuwe kiezen
+                if old_id is not None:
+                    seen_ids.add(old_id)
                 last_run = item.get("last_run_at")
                 rows.append((
+                    old_id,
                     term,
                     _int_or_none(item.get("interval_minutes")),
                     _int_or_none(item.get("min_price")),
@@ -218,8 +228,8 @@ def _import_legacy_json(conn: sqlite3.Connection) -> None:
                     conn.executemany(
                         """
                         INSERT INTO keywords
-                            (term, interval_minutes, min_price, max_price, limit_per_run, last_run_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                            (id, term, interval_minutes, min_price, max_price, limit_per_run, last_run_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         rows,
                     )
