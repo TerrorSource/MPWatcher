@@ -50,8 +50,8 @@
         <div class="form-field">
           <label class="form-label">Slaapstand</label>
           <select class="select" name="sleep_mode">
-            <option value="nee" {% if settings.sleep_mode == "nee" %}selected{% endif %}>Uit</option>
-            <option value="ja" {% if settings.sleep_mode == "ja" %}selected{% endif %}>Aan</option>
+            <option value="nee" {% if not settings.sleep_mode %}selected{% endif %}>Uit</option>
+            <option value="ja" {% if settings.sleep_mode %}selected{% endif %}>Aan</option>
           </select>
         </div>
 
@@ -113,8 +113,8 @@
         <div class="form-field">
           <label class="form-label">Handmatig zoeken naar Telegram</label>
           <select class="select" name="manual_telegram">
-            <option value="nee" {% if settings.manual_telegram == "nee" %}selected{% endif %}>Nee</option>
-            <option value="ja" {% if settings.manual_telegram == "ja" %}selected{% endif %}>Ja</option>
+            <option value="nee" {% if not settings.manual_telegram %}selected{% endif %}>Nee</option>
+            <option value="ja" {% if settings.manual_telegram %}selected{% endif %}>Ja</option>
           </select>
         </div>
 
@@ -145,8 +145,8 @@
       <div class="form-field">
         <label class="form-label">Blocklist</label>
         <select class="select" name="blocklist_enabled">
-          <option value="nee" {% if settings.blocklist_enabled == "nee" %}selected{% endif %}>Uit</option>
-          <option value="ja" {% if settings.blocklist_enabled == "ja" %}selected{% endif %}>Aan</option>
+          <option value="nee" {% if not settings.blocklist_enabled %}selected{% endif %}>Uit</option>
+          <option value="ja" {% if settings.blocklist_enabled %}selected{% endif %}>Aan</option>
         </select>
       </div>
 

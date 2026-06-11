@@ -1,12 +1,15 @@
 import os
 import json
+import logging
 import sqlite3
 import threading
 import time as time_module
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 import requests
 from flask import (
@@ -22,23 +25,42 @@ from flask import (
 # Basisconfiguratie
 # ------------------------------------------------------------------------------
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("mpwatcher")
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mpwatchter-dev")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mpwatcher-dev")
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = Path(os.environ.get("MPWATCHTER_CONFIG_DIR", "/config"))
+# MPWATCHTER_CONFIG_DIR is de oude (typo) naam; fallback voor bestaande deployments
+CONFIG_DIR = Path(
+    os.environ.get("MPWATCHER_CONFIG_DIR")
+    or os.environ.get("MPWATCHTER_CONFIG_DIR")
+    or "/config"
+)
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Legacy JSON-bestanden; worden bij de eerste start eenmalig in de database
+# geïmporteerd en daarna hernoemd naar *.imported.
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 KEYWORDS_FILE = CONFIG_DIR / "keywords.json"
 DB_FILE = CONFIG_DIR / "results.db"
+
+# Maximaal bewaarde resultaten per zoekwoord; oudere rijen worden opgeruimd.
+MAX_RESULTS_PER_KEYWORD = 500
+
+# /health meldt unhealthy als de scheduler zo lang geen teken van leven gaf.
+SCHEDULER_STALE_SECONDS = 300
 
 DEFAULT_SETTINGS = {
     "marketplace": "marktplaats",  # marktplaats | 2dehands
     "default_interval_minutes": 15,
     "default_limit_per_run": 5,
 
-    "sleep_mode": "nee",
+    "sleep_mode": False,
     "sleep_start": "23:00",
     "sleep_end": "07:00",
 
@@ -47,10 +69,10 @@ DEFAULT_SETTINGS = {
 
     "telegram_bot_id": "",
     "telegram_chat_id": "",
-    "manual_telegram": "nee",
+    "manual_telegram": False,
 
     # Blocklist
-    "blocklist_enabled": "nee",
+    "blocklist_enabled": False,
     "blocked_sellers": [],
 }
 
@@ -60,137 +82,312 @@ USER_AGENT = (
     "Chrome/120.0 Safari/537.36"
 )
 
+# Eén sessie voor alle uitgaande HTTP-verkeer: hergebruikt TCP/TLS-verbindingen.
+HTTP = requests.Session()
+HTTP.headers["User-Agent"] = USER_AGENT
+
 
 # ------------------------------------------------------------------------------
-# Helpers: settings / keywords
+# Database
 # ------------------------------------------------------------------------------
 
-def _norm_yesno(v: str, default="nee") -> str:
-    if not v:
-        return default
-    return "ja" if str(v).strip().lower() == "ja" else "nee"
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    conn = _connect()
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        with conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    keyword_id INTEGER NOT NULL,
+                    ad_id TEXT NOT NULL,
+                    title TEXT,
+                    price TEXT,
+                    url TEXT,
+                    image_url TEXT,
+                    seller TEXT,
+                    first_seen_at TEXT,
+                    posted_at TEXT,
+                    posted_ts TEXT,
+                    UNIQUE(keyword_id, ad_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS keywords (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    term TEXT NOT NULL,
+                    interval_minutes INTEGER,
+                    min_price INTEGER,
+                    max_price INTEGER,
+                    limit_per_run INTEGER,
+                    last_run_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+
+            # Kolommen aanvullen voor databases uit oudere versies
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(results)")]
+            for col in ("posted_at", "seller", "posted_ts"):
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE results ADD COLUMN {col} TEXT")
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_results_ad_id ON results(ad_id)"
+            )
+
+        _import_legacy_json(conn)
+        _backfill_posted_ts(conn)
+    finally:
+        conn.close()
+
+
+def _import_legacy_json(conn: sqlite3.Connection) -> None:
+    """Eenmalige migratie van settings.json / keywords.json naar de database."""
+    if SETTINGS_FILE.exists():
+        try:
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8")) or {}
+        except Exception:
+            logger.exception("settings.json kon niet gelezen worden tijdens migratie")
+            data = {}
+
+        if isinstance(data, dict):
+            for key in ("sleep_mode", "manual_telegram", "blocklist_enabled"):
+                if key in data:
+                    data[key] = str(data[key]).strip().lower() == "ja"
+            existing = {row["key"] for row in conn.execute("SELECT key FROM settings")}
+            to_import = {
+                k: v for k, v in data.items()
+                if k in DEFAULT_SETTINGS and k not in existing
+            }
+            if to_import:
+                with conn:
+                    conn.executemany(
+                        "INSERT INTO settings (key, value) VALUES (?, ?)",
+                        [(k, json.dumps(v)) for k, v in to_import.items()],
+                    )
+        SETTINGS_FILE.rename(SETTINGS_FILE.parent / (SETTINGS_FILE.name + ".imported"))
+        logger.info("settings.json geïmporteerd in de database")
+
+    if KEYWORDS_FILE.exists():
+        try:
+            data = json.loads(KEYWORDS_FILE.read_text(encoding="utf-8")) or []
+        except Exception:
+            logger.exception("keywords.json kon niet gelezen worden tijdens migratie")
+            data = []
+
+        if isinstance(data, dict):
+            data = data.get("keywords") if isinstance(data.get("keywords"), list) else [data]
+
+        has_keywords = conn.execute("SELECT 1 FROM keywords LIMIT 1").fetchone()
+        if isinstance(data, list) and not has_keywords:
+            rows = []
+            for item in data:
+                if not isinstance(item, dict):
+                    item = {"term": str(item)}
+                term = (item.get("term") or "").strip()
+                if not term:
+                    continue
+                last_run = item.get("last_run_at")
+                rows.append((
+                    term,
+                    _int_or_none(item.get("interval_minutes")),
+                    _int_or_none(item.get("min_price")),
+                    _int_or_none(item.get("max_price")),
+                    _int_or_none(item.get("limit_per_run")),
+                    None if (not last_run or last_run == "Nooit") else str(last_run),
+                ))
+            if rows:
+                with conn:
+                    conn.executemany(
+                        """
+                        INSERT INTO keywords
+                            (term, interval_minutes, min_price, max_price, limit_per_run, last_run_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        rows,
+                    )
+        KEYWORDS_FILE.rename(KEYWORDS_FILE.parent / (KEYWORDS_FILE.name + ".imported"))
+        logger.info("keywords.json geïmporteerd in de database (%s zoekwoorden)", len(data))
+
+
+def _backfill_posted_ts(conn: sqlite3.Connection) -> None:
+    """Vul posted_ts (genormaliseerde sorteertijd) voor rijen uit oudere versies."""
+    rows = conn.execute(
+        "SELECT id, posted_at, first_seen_at FROM results WHERE posted_ts IS NULL"
+    ).fetchall()
+    if not rows:
+        return
+    updates = []
+    for row in rows:
+        dt = parse_posted_at_to_dt(row["posted_at"], row["first_seen_at"])
+        updates.append((dt.isoformat(timespec="seconds"), row["id"]))
+    with conn:
+        conn.executemany("UPDATE results SET posted_ts = ? WHERE id = ?", updates)
+    logger.info("posted_ts ingevuld voor %s bestaande resultaten", len(updates))
+
+
+# ------------------------------------------------------------------------------
+# Helpers: settings
+# ------------------------------------------------------------------------------
+
+def _form_bool(v) -> bool:
+    """Formulier-selects sturen 'ja'/'nee'; intern werken we met booleans."""
+    return str(v or "").strip().lower() == "ja"
+
+
+def _int_or_none(v) -> Optional[int]:
+    if v in (None, ""):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def load_settings() -> dict:
-    if not SETTINGS_FILE.exists():
-        save_settings(DEFAULT_SETTINGS)
-        return DEFAULT_SETTINGS.copy()
-
+    conn = _connect()
     try:
-        with SETTINGS_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    finally:
+        conn.close()
 
-    merged = DEFAULT_SETTINGS.copy()
-    merged.update(data or {})
+    merged = {
+        k: (v.copy() if isinstance(v, (list, dict)) else v)
+        for k, v in DEFAULT_SETTINGS.items()
+    }
+    for row in rows:
+        if row["key"] not in DEFAULT_SETTINGS:
+            continue
+        try:
+            merged[row["key"]] = json.loads(row["value"])
+        except Exception:
+            logger.warning("Instelling '%s' kon niet gelezen worden, default gebruikt", row["key"])
 
-    merged["default_interval_minutes"] = int(merged.get("default_interval_minutes", 15) or 15)
-    merged["default_limit_per_run"] = int(merged.get("default_limit_per_run", 5) or 5)
+    merged["default_interval_minutes"] = _int_or_none(merged.get("default_interval_minutes")) or 15
+    merged["default_limit_per_run"] = _int_or_none(merged.get("default_limit_per_run")) or 5
 
-    mp = (merged.get("marketplace") or "marktplaats").strip().lower()
+    mp = str(merged.get("marketplace") or "marktplaats").strip().lower()
     merged["marketplace"] = "2dehands" if mp in ("2dehands", "2dehands.be", "2dehandsbe") else "marktplaats"
 
-    merged["sleep_mode"] = _norm_yesno(merged.get("sleep_mode", "nee"))
-    merged["manual_telegram"] = _norm_yesno(merged.get("manual_telegram", "nee"))
+    for key in ("sleep_mode", "manual_telegram", "blocklist_enabled"):
+        merged[key] = bool(merged.get(key))
 
-    merged["blocklist_enabled"] = _norm_yesno(merged.get("blocklist_enabled", "nee"))
     if not isinstance(merged.get("blocked_sellers"), list):
         merged["blocked_sellers"] = []
 
     return merged
 
 
-def save_settings(settings: dict) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with SETTINGS_FILE.open("w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+def save_settings(values: dict) -> None:
+    """Sla (alleen) de meegegeven instellingen op; per key een upsert,
+    zodat gelijktijdige schrijvers elkaars keys niet overschrijven."""
+    if not values:
+        return
+    conn = _connect()
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                [(k, json.dumps(v)) for k, v in values.items()],
+            )
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------------------------
+# Helpers: keywords
+# ------------------------------------------------------------------------------
+
+def _row_to_keyword(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "term": row["term"],
+        "interval_minutes": row["interval_minutes"],
+        "min_price": row["min_price"],
+        "max_price": row["max_price"],
+        "limit_per_run": row["limit_per_run"],
+        "last_run_at": row["last_run_at"] or "Nooit",
+    }
 
 
 def load_keywords() -> list[dict]:
-    if not KEYWORDS_FILE.exists():
-        return []
-
+    conn = _connect()
     try:
-        with KEYWORDS_FILE.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return []
-
-    if isinstance(data, list):
-        raw_list = data
-    elif isinstance(data, dict):
-        if "keywords" in data and isinstance(data["keywords"], list):
-            raw_list = data["keywords"]
-        else:
-            raw_list = [data]
-    else:
-        return []
-
-    normed: list[dict] = []
-    for item in raw_list:
-        if not isinstance(item, dict):
-            item = {"term": str(item)}
-
-        item.setdefault("id", None)
-        item.setdefault("term", "")
-        item.setdefault("interval_minutes", None)
-        item.setdefault("min_price", None)
-        item.setdefault("max_price", None)
-        item.setdefault("limit_per_run", None)
-        item.setdefault("last_run_at", "Nooit")
-
-        normed.append(item)
-
-    for idx, kw in enumerate(normed, start=1):
-        if kw.get("id") is None:
-            kw["id"] = idx
-
-    return normed
+        rows = conn.execute("SELECT * FROM keywords ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    return [_row_to_keyword(r) for r in rows]
 
 
-def save_keywords(keywords: list[dict]) -> None:
-    for idx, kw in enumerate(keywords, start=1):
-        if kw.get("id") is None:
-            kw["id"] = idx
-    with KEYWORDS_FILE.open("w", encoding="utf-8") as f:
-        json.dump(keywords, f, ensure_ascii=False, indent=2)
-
-
-# ------------------------------------------------------------------------------
-# DB
-# ------------------------------------------------------------------------------
-
-def init_db() -> None:
-    conn = sqlite3.connect(DB_FILE)
+def get_keyword(keyword_id: int) -> Optional[dict]:
+    conn = _connect()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                keyword_id INTEGER NOT NULL,
-                ad_id TEXT NOT NULL,
-                title TEXT,
-                price TEXT,
-                url TEXT,
-                image_url TEXT,
-                seller TEXT,
-                first_seen_at TEXT,
-                posted_at TEXT,
-                UNIQUE(keyword_id, ad_id)
+        row = conn.execute("SELECT * FROM keywords WHERE id = ?", (keyword_id,)).fetchone()
+    finally:
+        conn.close()
+    return _row_to_keyword(row) if row else None
+
+
+def add_keyword_row(term: str, interval_minutes, min_price, max_price, limit_per_run) -> int:
+    conn = _connect()
+    try:
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO keywords (term, interval_minutes, min_price, max_price, limit_per_run, last_run_at)
+                VALUES (?, ?, ?, ?, ?, NULL)
+                """,
+                (term, interval_minutes, min_price, max_price, limit_per_run),
             )
-            """
-        )
-        conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
 
-        cur.execute("PRAGMA table_info(results)")
-        cols = [row[1] for row in cur.fetchall()]
-        if "posted_at" not in cols:
-            cur.execute("ALTER TABLE results ADD COLUMN posted_at TEXT")
-        if "seller" not in cols:
-            cur.execute("ALTER TABLE results ADD COLUMN seller TEXT")
-        conn.commit()
+
+def update_keyword_fields(keyword_id: int, **fields) -> bool:
+    """Update alleen de meegegeven kolommen; scheduler (last_run_at) en UI-edits
+    kunnen elkaar zo niet meer overschrijven."""
+    if not fields:
+        return get_keyword(keyword_id) is not None
+    assignments = ", ".join(f"{col} = ?" for col in fields)
+    conn = _connect()
+    try:
+        with conn:
+            cur = conn.execute(
+                f"UPDATE keywords SET {assignments} WHERE id = ?",
+                (*fields.values(), keyword_id),
+            )
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_keyword_row(keyword_id: int) -> bool:
+    conn = _connect()
+    try:
+        with conn:
+            cur = conn.execute("DELETE FROM keywords WHERE id = ?", (keyword_id,))
+            return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -222,7 +419,7 @@ def build_search_url(term: str, settings: dict) -> str:
     postcode = (settings.get("postcode") or "").strip()
     radius_km = (settings.get("radius_km") or "alle").strip()
 
-    query = term.strip().replace(" ", "+")
+    query = quote_plus(term.strip())
     base = f"https://{domain}/q/{query}/#offeredSince:Altijd|sortBy:SORT_INDEX|sortOrder:DECREASING"
 
     if radius_km and radius_km != "alle":
@@ -329,6 +526,32 @@ def parse_posted_at_to_dt(posted_at: str | None, fallback_first_seen: str | None
 
 
 # ------------------------------------------------------------------------------
+# Prijs parsing
+# ------------------------------------------------------------------------------
+
+def parse_price_to_cents(price_info, price_display: str) -> Optional[int]:
+    """Prijs in centen, bij voorkeur direct uit de API (priceCents).
+    Fallback: weergavestring zoals '€ 1.250' of '€ 12,50' correct parsen.
+    'Bieden'/'Gratis' e.d. leveren None op."""
+    if isinstance(price_info, dict):
+        cents = price_info.get("priceCents")
+        if isinstance(cents, (int, float)) and cents > 0:
+            return int(cents)
+
+    if price_display:
+        m = re.search(r"(\d[\d\.]*)(?:,(\d{1,2}))?", price_display)
+        if m:
+            try:
+                euros = int(m.group(1).replace(".", ""))
+                cents = int((m.group(2) or "0").ljust(2, "0"))
+                return euros * 100 + cents
+            except ValueError:
+                pass
+
+    return None
+
+
+# ------------------------------------------------------------------------------
 # Blocklist helpers
 # ------------------------------------------------------------------------------
 
@@ -337,23 +560,10 @@ def _norm_name(s: str) -> str:
 
 
 def get_blocklist(settings: dict) -> set[str]:
-    if settings.get("blocklist_enabled") != "ja":
+    if not settings.get("blocklist_enabled"):
         return set()
     names = settings.get("blocked_sellers") or []
     return {_norm_name(x).lower() for x in names if _norm_name(x)}
-
-
-def add_blocked_seller(settings: dict, name: str) -> dict:
-    name = _norm_name(name)
-    if not name:
-        return settings
-
-    current = settings.get("blocked_sellers") or []
-    existing_lower = {str(x).strip().lower() for x in current if str(x).strip()}
-    if name.lower() not in existing_lower:
-        current.append(name)
-    settings["blocked_sellers"] = current
-    return settings
 
 
 # ------------------------------------------------------------------------------
@@ -438,27 +648,32 @@ def fetch_seller_from_ad_page(url: str) -> str:
     if not url:
         return ""
     try:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+        resp = HTTP.get(url, timeout=8)
         resp.raise_for_status()
-        html = resp.text
-        return _extract_seller_from_html(html)
-    except Exception:
+        return _extract_seller_from_html(resp.text)
+    except Exception as exc:
+        logger.warning("Seller ophalen mislukt voor %s: %s", url, exc)
         return ""
 
 
 def enrich_ads_with_seller(ads: list[dict]) -> list[dict]:
     """
-    Vul seller aan voor ads waar die leeg is. (HTML fallback)
+    Vul seller aan voor ads waar die leeg is (HTML fallback).
+    Detailpagina's worden parallel opgehaald zodat een run niet
+    minutenlang blokkeert bij veel advertenties.
     """
-    for ad in ads:
-        if (ad.get("seller") or "").strip():
-            continue
-        url = (ad.get("url") or "").strip()
-        if not url:
-            continue
-        seller = fetch_seller_from_ad_page(url)
-        if seller:
-            ad["seller"] = seller
+    todo = [
+        ad for ad in ads
+        if not (ad.get("seller") or "").strip() and (ad.get("url") or "").strip()
+    ]
+    if not todo:
+        return ads
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        sellers = pool.map(lambda ad: fetch_seller_from_ad_page(ad["url"].strip()), todo)
+        for ad, seller in zip(todo, sellers):
+            if seller:
+                ad["seller"] = seller
     return ads
 
 
@@ -478,7 +693,6 @@ def fetch_market_results(term: str, settings: dict, limit: int) -> list[dict]:
         except Exception:
             distance_meters = None
 
-    headers = {"User-Agent": USER_AGENT}
     api_url = f"https://{domain}/lrp/api/search"
     params = {
         "query": term,
@@ -496,7 +710,7 @@ def fetch_market_results(term: str, settings: dict, limit: int) -> list[dict]:
     results: list[dict] = []
 
     try:
-        resp = requests.get(api_url, params=params, headers=headers, timeout=15)
+        resp = HTTP.get(api_url, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
 
@@ -558,6 +772,7 @@ def fetch_market_results(term: str, settings: dict, limit: int) -> list[dict]:
                         "ad_id": ad_id,
                         "title": title,
                         "price": price,
+                        "price_cents": parse_price_to_cents(price_info, price),
                         "url": url,
                         "image_url": image_url,
                         "posted_at": posted_at,
@@ -565,54 +780,91 @@ def fetch_market_results(term: str, settings: dict, limit: int) -> list[dict]:
                     }
                 )
 
-    except Exception:
+    except Exception as exc:
+        logger.warning("Zoekopdracht voor '%s' mislukt: %s", term, exc)
         return []
 
     return results[:limit]
 
 
 # ------------------------------------------------------------------------------
-# DB helpers (insert + update missing seller)
+# DB helpers: resultaten
 # ------------------------------------------------------------------------------
 
-def store_new_results(keyword_id: int, ads: list[dict]) -> list[dict]:
-    """
-    Insert new rows.
-    If the row already exists, we *optionally* update seller/posted_at/image_url when missing.
-    This fixes: manual search where earlier rows had empty seller.
-    """
+def get_known_ad_ids(keyword_id: int) -> set[str]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT ad_id FROM results WHERE keyword_id = ?", (keyword_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return {row["ad_id"] for row in rows}
+
+
+def insert_new_ads(keyword_id: int, ads: list[dict]) -> list[dict]:
+    """Voeg nieuwe advertenties toe. Markeert per ad of dezelfde advertentie al
+    via een ander zoekwoord bekend was (dan geen dubbele Telegram-melding)."""
     if not ads:
         return []
 
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    new_ads: list[dict] = []
+    inserted: list[dict] = []
+    conn = _connect()
     try:
-        cur = conn.cursor()
+        with conn:
+            cur = conn.cursor()
+            for ad in ads:
+                now_iso = datetime.now().isoformat(timespec="seconds")
+                posted_ts = parse_posted_at_to_dt(
+                    ad.get("posted_at"), now_iso
+                ).isoformat(timespec="seconds")
 
-        for ad in ads:
-            ad_id = ad["ad_id"]
-            title = ad.get("title", "")
-            price = ad.get("price", "")
-            url = ad.get("url", "")
-            image_url = ad.get("image_url", "")
-            seller = ad.get("seller", "")
-            posted_at = ad.get("posted_at", "")
+                seen_elsewhere = cur.execute(
+                    "SELECT 1 FROM results WHERE ad_id = ? AND keyword_id != ? LIMIT 1",
+                    (ad["ad_id"], keyword_id),
+                ).fetchone() is not None
 
-            now_iso = datetime.now().isoformat(timespec="seconds")
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO results
+                            (keyword_id, ad_id, title, price, url, image_url, seller,
+                             first_seen_at, posted_at, posted_ts)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            keyword_id, ad["ad_id"], ad.get("title", ""), ad.get("price", ""),
+                            ad.get("url", ""), ad.get("image_url", ""), ad.get("seller", ""),
+                            now_iso, ad.get("posted_at", ""), posted_ts,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    continue
 
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO results (keyword_id, ad_id, title, price, url, image_url, seller, first_seen_at, posted_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (keyword_id, ad_id, title, price, url, image_url, seller, now_iso, posted_at),
-                )
-                new_ads.append(ad)
-            except sqlite3.IntegrityError:
-                # Already exists -> update missing fields if we have better data now
-                cur.execute(
+                ad["_seen_elsewhere"] = seen_elsewhere
+                inserted.append(ad)
+    finally:
+        conn.close()
+
+    return inserted
+
+
+def update_known_ads(keyword_id: int, ads: list[dict]) -> None:
+    """Vul ontbrekende velden aan van reeds bekende advertenties met verse API-data."""
+    if not ads:
+        return
+
+    conn = _connect()
+    try:
+        with conn:
+            for ad in ads:
+                posted_at = ad.get("posted_at", "")
+                posted_ts = ""
+                if posted_at:
+                    dt = parse_posted_at_to_dt(posted_at, None)
+                    if dt != datetime.min:
+                        posted_ts = dt.isoformat(timespec="seconds")
+                conn.execute(
                     """
                     UPDATE results
                     SET
@@ -620,78 +872,93 @@ def store_new_results(keyword_id: int, ads: list[dict]) -> list[dict]:
                         price = COALESCE(NULLIF(?, ''), price),
                         url = COALESCE(NULLIF(?, ''), url),
                         image_url = CASE
-                            WHEN (image_url IS NULL OR image_url = '') AND (? IS NOT NULL AND ? != '') THEN ?
+                            WHEN (image_url IS NULL OR image_url = '') AND ? != '' THEN ?
                             ELSE image_url
                         END,
                         posted_at = CASE
-                            WHEN (posted_at IS NULL OR posted_at = '') AND (? IS NOT NULL AND ? != '') THEN ?
+                            WHEN (posted_at IS NULL OR posted_at = '') AND ? != '' THEN ?
                             ELSE posted_at
                         END,
+                        posted_ts = CASE
+                            WHEN (posted_at IS NULL OR posted_at = '') AND ? != '' THEN ?
+                            ELSE posted_ts
+                        END,
                         seller = CASE
-                            WHEN (seller IS NULL OR seller = '') AND (? IS NOT NULL AND ? != '') THEN ?
+                            WHEN (seller IS NULL OR seller = '') AND ? != '' THEN ?
                             ELSE seller
                         END
                     WHERE keyword_id = ? AND ad_id = ?
                     """,
                     (
-                        title, price, url,
-                        image_url, image_url, image_url,
-                        posted_at, posted_at, posted_at,
-                        seller, seller, seller,
-                        keyword_id, ad_id
+                        ad.get("title", ""), ad.get("price", ""), ad.get("url", ""),
+                        ad.get("image_url", ""), ad.get("image_url", ""),
+                        posted_at, posted_at,
+                        posted_ts, posted_ts,
+                        ad.get("seller", ""), ad.get("seller", ""),
+                        keyword_id, ad["ad_id"],
                     ),
                 )
-
-        conn.commit()
     finally:
         conn.close()
 
-    return new_ads
-
 
 def get_results_for_keyword(keyword_id: int, limit: int = 200) -> list[dict]:
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
+    conn = _connect()
     try:
-        cur = conn.cursor()
-        cur.execute(
+        rows = conn.execute(
             """
             SELECT title, price, url, image_url, seller, first_seen_at, posted_at
             FROM results
             WHERE keyword_id = ?
+            ORDER BY COALESCE(posted_ts, first_seen_at) DESC
+            LIMIT ?
             """,
-            (keyword_id,),
-        )
-        rows = cur.fetchall()
+            (keyword_id, limit),
+        ).fetchall()
     finally:
         conn.close()
-
-    ads: list[dict] = []
-    for r in rows:
-        d = dict(r)
-        sort_dt = parse_posted_at_to_dt(d.get("posted_at"), d.get("first_seen_at"))
-        d["_sort_dt"] = sort_dt
-        ads.append(d)
-
-    ads.sort(key=lambda x: x["_sort_dt"], reverse=True)
-    for d in ads:
-        d.pop("_sort_dt", None)
-
-    return ads[:limit]
+    return [dict(r) for r in rows]
 
 
 def reset_results_for_keyword(keyword_id: int) -> None:
-    conn = sqlite3.connect(DB_FILE)
+    conn = _connect()
     try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM results WHERE keyword_id = ?", (keyword_id,))
-        conn.commit()
+        with conn:
+            conn.execute("DELETE FROM results WHERE keyword_id = ?", (keyword_id,))
+    finally:
+        conn.close()
+
+
+def prune_results_for_keyword(keyword_id: int) -> None:
+    """Houd maximaal MAX_RESULTS_PER_KEYWORD resultaten per zoekwoord,
+    zodat de database niet onbeperkt groeit."""
+    conn = _connect()
+    try:
+        with conn:
+            cur = conn.execute(
+                """
+                DELETE FROM results
+                WHERE keyword_id = ?
+                  AND id NOT IN (
+                      SELECT id FROM results
+                      WHERE keyword_id = ?
+                      ORDER BY first_seen_at DESC, id DESC
+                      LIMIT ?
+                  )
+                """,
+                (keyword_id, keyword_id, MAX_RESULTS_PER_KEYWORD),
+            )
+            if cur.rowcount:
+                logger.info(
+                    "%s oude resultaten opgeruimd voor zoekwoord %s",
+                    cur.rowcount, keyword_id,
+                )
     finally:
         conn.close()
 
 
 # ------------------------------------------------------------------------------
-# Telegram (oude werkende versie)
+# Telegram
 # ------------------------------------------------------------------------------
 
 def send_telegram_message(text: str, settings: dict) -> None:
@@ -700,17 +967,20 @@ def send_telegram_message(text: str, settings: dict) -> None:
     if not bot_id or not chat_id:
         return
 
+    # Geen parse_mode: advertentietitels met _ * [ ] braken Markdown-parsing
+    # waardoor Telegram het bericht stilletjes weigerde.
     url = f"https://api.telegram.org/bot{bot_id}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown",
         "disable_web_page_preview": False,
     }
     try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception:
-        pass
+        resp = HTTP.post(url, json=payload, timeout=10)
+        if not resp.ok:
+            logger.warning("Telegram sendMessage mislukt (%s): %s", resp.status_code, resp.text)
+    except Exception as exc:
+        logger.warning("Telegram sendMessage mislukt: %s", exc)
 
 
 def send_telegram_ad(ad: dict, settings: dict) -> None:
@@ -736,88 +1006,82 @@ def send_telegram_ad(ad: dict, settings: dict) -> None:
                 "chat_id": chat_id,
                 "photo": image_url,
                 "caption": caption,
-                "parse_mode": "Markdown",
                 "reply_markup": reply_markup,
             }
-            requests.post(api_url, json=payload, timeout=10)
         else:
             api_url = f"https://api.telegram.org/bot{bot_id}/sendMessage"
             payload = {
                 "chat_id": chat_id,
                 "text": caption,
-                "parse_mode": "Markdown",
                 "reply_markup": reply_markup,
             }
-            requests.post(api_url, json=payload, timeout=10)
-    except Exception:
-        pass
+        resp = HTTP.post(api_url, json=payload, timeout=10)
+        if not resp.ok:
+            logger.warning(
+                "Telegram-melding voor '%s' mislukt (%s): %s",
+                title, resp.status_code, resp.text,
+            )
+    except Exception as exc:
+        logger.warning("Telegram-melding voor '%s' mislukt: %s", title, exc)
 
 
 # ------------------------------------------------------------------------------
 # Search logic
 # ------------------------------------------------------------------------------
 
-def _parse_price_to_cents_like_old(p: str) -> Optional[int]:
-    if not p:
-        return None
-    digits = "".join(ch for ch in p if ch.isdigit())
-    if not digits:
-        return None
-    try:
-        return int(digits)
-    except ValueError:
-        return None
-
-
 def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) -> tuple[int, int]:
     term = keyword["term"]
     limit_per_run = int(keyword.get("limit_per_run") or settings["default_limit_per_run"])
-    min_price = keyword.get("min_price")
-    max_price = keyword.get("max_price")
-
     limit_per_run = max(1, min(20, limit_per_run))
+    min_price = _int_or_none(keyword.get("min_price"))
+    max_price = _int_or_none(keyword.get("max_price"))
 
     raw_ads = fetch_market_results(term, settings, limit_per_run)
 
-    # Blocklist filter
-    blocked = get_blocklist(settings)
-
-    filtered_ads: list[dict] = []
+    # Prijsfilter op centen uit de API; advertenties zonder bruikbare prijs
+    # ("Bieden", "Gratis") vallen weg zodra een grens is ingesteld.
+    ads: list[dict] = []
     for ad in raw_ads:
-        seller_l = (ad.get("seller") or "").strip().lower()
-        if blocked and seller_l and seller_l in blocked:
+        cents = ad.get("price_cents")
+        if min_price is not None and (cents is None or cents < min_price * 100):
             continue
+        if max_price is not None and (cents is None or cents > max_price * 100):
+            continue
+        ads.append(ad)
 
-        p_int = _parse_price_to_cents_like_old(ad.get("price", ""))
-        if min_price not in (None, ""):
-            try:
-                if p_int is None or p_int < int(min_price) * 100:
-                    continue
-            except ValueError:
-                pass
-        if max_price not in (None, ""):
-            try:
-                if p_int is None or p_int > int(max_price) * 100:
-                    continue
-            except ValueError:
-                pass
-        filtered_ads.append(ad)
+    # Alleen écht nieuwe advertenties verdienen de (dure) seller-fallback;
+    # bekende ads krijgen hooguit een veld-update met verse API-data.
+    known_ids = get_known_ad_ids(keyword["id"])
+    new_candidates = [ad for ad in ads if ad["ad_id"] not in known_ids]
+    known_ads = [ad for ad in ads if ad["ad_id"] in known_ids]
 
-    # IMPORTANT: seller fallback via HTML (so “Handmatig” gets seller immediately)
-    filtered_ads = enrich_ads_with_seller(filtered_ads)
+    enrich_ads_with_seller(new_candidates)
 
-    new_ads = store_new_results(keyword_id=keyword["id"], ads=filtered_ads)
+    # Blocklist ná de seller-verrijking, anders glippen verkopers door
+    # waarvan de API geen naam meegeeft.
+    blocked = get_blocklist(settings)
+    if blocked:
+        new_candidates = [
+            ad for ad in new_candidates
+            if (ad.get("seller") or "").strip().lower() not in blocked
+        ]
 
-    manual_telegram_on = (settings.get("manual_telegram", "nee").lower() == "ja")
-    if not manual:
+    update_known_ads(keyword["id"], known_ads)
+    new_ads = insert_new_ads(keyword["id"], new_candidates)
+    prune_results_for_keyword(keyword["id"])
+
+    notify = (not manual) or settings.get("manual_telegram")
+    if notify:
         for ad in new_ads:
+            if ad.get("_seen_elsewhere"):
+                logger.info(
+                    "Telegram overgeslagen voor '%s' (al gemeld via ander zoekwoord)",
+                    ad.get("title"),
+                )
+                continue
             send_telegram_ad(ad, settings)
-    else:
-        if manual_telegram_on and new_ads:
-            for ad in new_ads:
-                send_telegram_ad(ad, settings)
 
-    return len(filtered_ads), len(new_ads)
+    return len(ads), len(new_ads)
 
 
 # ------------------------------------------------------------------------------
@@ -826,18 +1090,21 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
 
 _worker_thread_started = False
 _worker_lock = threading.Lock()
+_last_heartbeat: Optional[float] = None
 
 
 def scheduler_loop():
+    global _last_heartbeat
     while True:
         try:
+            _last_heartbeat = time_module.monotonic()
             settings = load_settings()
             keywords = load_keywords()
             if not keywords:
                 time_module.sleep(30)
                 continue
 
-            sleep_mode = settings.get("sleep_mode", "nee").lower() == "ja"
+            sleep_mode = bool(settings.get("sleep_mode"))
             sleep_start = parse_time_str(settings.get("sleep_start", "23:00"))
             sleep_end = parse_time_str(settings.get("sleep_end", "07:00"))
 
@@ -846,6 +1113,7 @@ def scheduler_loop():
             in_sleep = sleep_mode and is_in_sleep_window(now_t, sleep_start, sleep_end)
 
             for kw in keywords:
+                _last_heartbeat = time_module.monotonic()
                 if not kw.get("term"):
                     continue
 
@@ -863,25 +1131,36 @@ def scheduler_loop():
 
                 if (last_dt is None) or (now - last_dt >= eff_interval):
                     try:
-                        run_search_for_keyword(kw, settings, manual=False)
-                        kw["last_run_at"] = datetime.now().isoformat(timespec="seconds")
-                        save_keywords(keywords)
+                        total, new_count = run_search_for_keyword(kw, settings, manual=False)
+                        logger.info(
+                            "Zoekactie '%s': %s resultaten, %s nieuw",
+                            kw["term"], total, new_count,
+                        )
+                        update_keyword_fields(
+                            kw["id"],
+                            last_run_at=datetime.now().isoformat(timespec="seconds"),
+                        )
                     except Exception:
+                        logger.exception("Zoekactie voor '%s' mislukt", kw.get("term"))
                         continue
 
             time_module.sleep(60)
         except Exception:
+            logger.exception("Onverwachte fout in scheduler")
             time_module.sleep(60)
 
 
 def start_background_worker():
     global _worker_thread_started
+    if os.environ.get("MPWATCHER_DISABLE_WORKER") == "1":
+        return
     with _worker_lock:
         if not _worker_thread_started:
             init_db()
             t = threading.Thread(target=scheduler_loop, daemon=True)
             t.start()
             _worker_thread_started = True
+            logger.info("Achtergrondworker gestart (config: %s)", CONFIG_DIR)
 
 
 # ------------------------------------------------------------------------------
@@ -908,84 +1187,66 @@ def index():
 @app.route("/keyword/add", methods=["POST"])
 def add_keyword():
     settings = load_settings()
-    keywords = load_keywords()
 
     term = (request.form.get("term") or "").strip()
     if not term:
         flash("Zoekwoord mag niet leeg zijn.", "error")
         return redirect(url_for("index"))
 
-    min_price = request.form.get("min_price")
-    max_price = request.form.get("max_price")
-
-    next_id = 1
-    if keywords:
-        next_id = max((int(k.get("id") or 0) for k in keywords), default=0) + 1
-
-    kw = {
-        "id": next_id,
-        "term": term,
-        "interval_minutes": settings["default_interval_minutes"],
-        "min_price": min_price if min_price else None,
-        "max_price": max_price if max_price else None,
-        "limit_per_run": settings["default_limit_per_run"],
-        "last_run_at": "Nooit",
-    }
-    keywords.append(kw)
-    save_keywords(keywords)
+    add_keyword_row(
+        term=term,
+        interval_minutes=settings["default_interval_minutes"],
+        min_price=_int_or_none(request.form.get("min_price")),
+        max_price=_int_or_none(request.form.get("max_price")),
+        limit_per_run=settings["default_limit_per_run"],
+    )
     flash(f"Zoekwoord '{term}' toegevoegd.", "success")
     return redirect(url_for("index"))
 
 
 @app.route("/keyword/<int:keyword_id>/edit", methods=["POST"])
 def edit_keyword(keyword_id: int):
-    keywords = load_keywords()
-    kw = next((k for k in keywords if int(k.get("id") or 0) == keyword_id), None)
-    if not kw:
-        flash("Zoekwoord niet gevonden.", "error")
-        return redirect(url_for("index"))
+    fields: dict = {}
 
-    term = (request.form.get("term") or kw["term"]).strip()
+    term = (request.form.get("term") or "").strip()
+    if term:
+        fields["term"] = term
+
     interval = request.form.get("interval")
-    min_price = request.form.get("min_price")
-    max_price = request.form.get("max_price")
+    if interval:
+        try:
+            fields["interval_minutes"] = max(1, int(interval))
+        except ValueError:
+            pass
+
+    if "min_price" in request.form:
+        fields["min_price"] = _int_or_none(request.form.get("min_price"))
+    if "max_price" in request.form:
+        fields["max_price"] = _int_or_none(request.form.get("max_price"))
+
     limit_per_run = request.form.get("limit_per_run")
-
-    kw["term"] = term
-
-    if interval is not None and interval != "":
+    if limit_per_run:
         try:
-            kw["interval_minutes"] = max(1, int(interval))
+            fields["limit_per_run"] = max(1, min(20, int(limit_per_run)))
         except ValueError:
             pass
 
-    kw["min_price"] = min_price if min_price not in ("", None) else None
-    kw["max_price"] = max_price if max_price not in ("", None) else None
+    if not update_keyword_fields(keyword_id, **fields):
+        flash("Zoekwoord niet gevonden.", "error")
 
-    if limit_per_run is not None and limit_per_run != "":
-        try:
-            l = int(limit_per_run)
-            l = max(1, min(20, l))
-            kw["limit_per_run"] = l
-        except ValueError:
-            pass
-
-    save_keywords(keywords)
     return redirect(url_for("index"))  # silent save
 
 
 @app.route("/keyword/<int:keyword_id>/manual", methods=["POST"])
 def manual_search(keyword_id: int):
     settings = load_settings()
-    keywords = load_keywords()
-    kw = next((k for k in keywords if int(k.get("id") or 0) == keyword_id), None)
+    kw = get_keyword(keyword_id)
     if not kw:
         flash("Zoekwoord niet gevonden.", "error")
         return redirect(url_for("index"))
 
     total, new_count = run_search_for_keyword(kw, settings, manual=True)
-    kw["last_run_at"] = datetime.now().isoformat(timespec="seconds")
-    save_keywords(keywords)
+    update_keyword_fields(keyword_id, last_run_at=datetime.now().isoformat(timespec="seconds"))
 
     flash(
         f"Handmatige zoekactie voor '{kw['term']}' uitgevoerd ({total} resultaten, {new_count} nieuw).",
@@ -996,28 +1257,23 @@ def manual_search(keyword_id: int):
 
 @app.route("/keyword/<int:keyword_id>/reset", methods=["POST"])
 def reset_keyword(keyword_id: int):
-    keywords = load_keywords()
-    kw = next((k for k in keywords if int(k.get("id") or 0) == keyword_id), None)
+    kw = get_keyword(keyword_id)
     if not kw:
         flash("Zoekwoord niet gevonden.", "error")
         return redirect(url_for("index"))
 
     reset_results_for_keyword(keyword_id)
-    kw["last_run_at"] = "Nooit"
-    save_keywords(keywords)
+    update_keyword_fields(keyword_id, last_run_at=None)
     flash(f"Resultaten voor '{kw['term']}' zijn gereset.", "success")
     return redirect(url_for("index"))
 
 
 @app.route("/keyword/<int:keyword_id>/delete", methods=["POST"])
 def delete_keyword(keyword_id: int):
-    keywords = load_keywords()
-    remaining = [k for k in keywords if int(k.get("id") or 0) != keyword_id]
-    if len(remaining) == len(keywords):
+    if not delete_keyword_row(keyword_id):
         flash("Zoekwoord niet gevonden.", "error")
         return redirect(url_for("index"))
 
-    save_keywords(remaining)
     reset_results_for_keyword(keyword_id)
     flash("Zoekwoord verwijderd.", "success")
     return redirect(url_for("index"))
@@ -1026,8 +1282,7 @@ def delete_keyword(keyword_id: int):
 @app.route("/keyword/<int:keyword_id>/results")
 def results(keyword_id: int):
     settings = load_settings()
-    keywords = load_keywords()
-    kw = next((k for k in keywords if int(k.get("id") or 0) == keyword_id), None)
+    kw = get_keyword(keyword_id)
     if not kw:
         flash("Zoekwoord niet gevonden.", "error")
         return redirect(url_for("index"))
@@ -1048,9 +1303,7 @@ def results(keyword_id: int):
 
 @app.route("/blocklist/save", methods=["POST"])
 def blocklist_save():
-    settings = load_settings()
-
-    enabled = _norm_yesno(request.form.get("blocklist_enabled", "nee"))
+    enabled = _form_bool(request.form.get("blocklist_enabled"))
     raw = request.form.get("blocked_sellers_text", "") or ""
     lines = [x.strip() for x in raw.splitlines()]
 
@@ -1065,9 +1318,7 @@ def blocklist_save():
         seen.add(xl)
         cleaned.append(x)
 
-    settings["blocklist_enabled"] = enabled
-    settings["blocked_sellers"] = cleaned
-    save_settings(settings)
+    save_settings({"blocklist_enabled": enabled, "blocked_sellers": cleaned})
 
     flash("Blocklist opgeslagen.", "success")
     return redirect(url_for("config_view"))
@@ -1075,13 +1326,17 @@ def blocklist_save():
 
 @app.route("/blocklist/add", methods=["POST"])
 def blocklist_add():
-    settings = load_settings()
-    seller = request.form.get("seller", "") or ""
+    seller = _norm_name(request.form.get("seller", ""))
     keyword_id = request.form.get("keyword_id", "")
 
-    settings["blocklist_enabled"] = "ja"
-    settings = add_blocked_seller(settings, seller)
-    save_settings(settings)
+    if seller:
+        settings = load_settings()
+        current = settings.get("blocked_sellers") or []
+        existing_lower = {str(x).strip().lower() for x in current if str(x).strip()}
+        if seller.lower() not in existing_lower:
+            current.append(seller)
+        save_settings({"blocklist_enabled": True, "blocked_sellers": current})
+        flash(f"Verkoper '{seller}' geblokkeerd.", "success")
 
     try:
         kid = int(keyword_id)
@@ -1104,54 +1359,37 @@ def config_view():
 
 @app.route("/config/timer", methods=["POST"])
 def config_save_timer():
-    settings = load_settings()
+    updates: dict = {}
 
     marketplace = (request.form.get("marketplace") or "marktplaats").strip().lower()
-    settings["marketplace"] = "2dehands" if marketplace == "2dehands" else "marktplaats"
+    updates["marketplace"] = "2dehands" if marketplace == "2dehands" else "marktplaats"
 
-    default_interval = request.form.get("default_interval_minutes")
-    default_limit = request.form.get("default_limit_per_run")
-    sleep_mode = request.form.get("sleep_mode", "nee")
-    sleep_start = request.form.get("sleep_start", "23:00")
-    sleep_end = request.form.get("sleep_end", "07:00")
-    postcode = request.form.get("postcode", "").strip()
-    radius_km = request.form.get("radius_km", "alle")
+    default_interval = _int_or_none(request.form.get("default_interval_minutes"))
+    if default_interval is not None:
+        updates["default_interval_minutes"] = max(1, default_interval)
 
-    try:
-        settings["default_interval_minutes"] = max(1, int(default_interval))
-    except Exception:
-        pass
+    default_limit = _int_or_none(request.form.get("default_limit_per_run"))
+    if default_limit is not None:
+        updates["default_limit_per_run"] = max(1, min(20, default_limit))
 
-    try:
-        l = int(default_limit)
-        settings["default_limit_per_run"] = max(1, min(20, l))
-    except Exception:
-        pass
+    updates["sleep_mode"] = _form_bool(request.form.get("sleep_mode"))
+    updates["sleep_start"] = request.form.get("sleep_start") or "23:00"
+    updates["sleep_end"] = request.form.get("sleep_end") or "07:00"
+    updates["postcode"] = (request.form.get("postcode") or "").strip()
+    updates["radius_km"] = request.form.get("radius_km") or "alle"
 
-    settings["sleep_mode"] = _norm_yesno(sleep_mode)
-    settings["sleep_start"] = sleep_start or "23:00"
-    settings["sleep_end"] = sleep_end or "07:00"
-    settings["postcode"] = postcode
-    settings["radius_km"] = radius_km or "alle"
-
-    save_settings(settings)
+    save_settings(updates)
     flash("Instellingen opgeslagen.", "success")
     return redirect(url_for("config_view"))
 
 
 @app.route("/config/telegram", methods=["POST"])
 def config_save_telegram():
-    settings = load_settings()
-
-    bot_id = request.form.get("telegram_bot_id", "").strip()
-    chat_id = request.form.get("telegram_chat_id", "").strip()
-    manual_telegram = request.form.get("manual_telegram", "nee")
-
-    settings["telegram_bot_id"] = bot_id
-    settings["telegram_chat_id"] = chat_id
-    settings["manual_telegram"] = _norm_yesno(manual_telegram)
-
-    save_settings(settings)
+    save_settings({
+        "telegram_bot_id": (request.form.get("telegram_bot_id") or "").strip(),
+        "telegram_chat_id": (request.form.get("telegram_chat_id") or "").strip(),
+        "manual_telegram": _form_bool(request.form.get("manual_telegram")),
+    })
     flash("Telegram-instellingen opgeslagen.", "success")
     return redirect(url_for("config_view"))
 
@@ -1165,10 +1403,27 @@ def config_test_telegram():
 
 
 # ------------------------------------------------------------------------------
+# Healthcheck
+# ------------------------------------------------------------------------------
+
+@app.route("/health")
+def health():
+    if _worker_thread_started and _last_heartbeat is not None:
+        age = time_module.monotonic() - _last_heartbeat
+        if age > SCHEDULER_STALE_SECONDS:
+            return {"status": "unhealthy", "scheduler_stale_seconds": int(age)}, 503
+    return {"status": "ok"}
+
+
+# ------------------------------------------------------------------------------
 # Entrypoint
 # ------------------------------------------------------------------------------
 
+init_db()
 start_background_worker()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    # Alleen voor lokaal draaien; in de container draait gunicorn (zie Dockerfile).
+    # debug=True is bewust uit: de Werkzeug-debugger geeft remote code execution
+    # en de auto-reloader start een tweede scheduler (dubbele meldingen).
+    app.run(host="0.0.0.0", port=8000, debug=False)

@@ -1,7 +1,11 @@
 __pycache__/
 *.pyc
 .env
+.pytest_cache/
 config/
 settings.json
 keywords.json
+*.imported
 results.db
+results.db-wal
+results.db-shm

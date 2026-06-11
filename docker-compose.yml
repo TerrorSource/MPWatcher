@@ -1,11 +1,9 @@
-version: "3.8"
-
 services:
-  marktplaats-watcher:
+  mpwatcher:
     build: .
-    container_name: marktplaats-watcher
+    container_name: mpwatcher
     ports:
-      - "9000:8000"
+      - "8000:8000"
     volumes:
       - ./config:/config
     restart: unless-stopped

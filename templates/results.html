@@ -9,7 +9,7 @@
       <div class="card-kicker">Resultaten</div>
       <div class="card-title">{{ keyword.term }}</div>
       <p class="card-description">
-        Gesorteerd op nieuw → oud. Blocklist is <strong>{{ "Aan" if settings.blocklist_enabled == "ja" else "Uit" }}</strong>.
+        Gesorteerd op nieuw → oud. Blocklist is <strong>{{ "Aan" if settings.blocklist_enabled else "Uit" }}</strong>.
       </p>
     </div>
     <a class="btn btn-soft" href="{{ url_for('index') }}">← Terug</a>

@@ -12,7 +12,7 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
 
 ## 🚀 Functionaliteit
 
-- Monitor meerdere Marktplaats zoekwoorden  
+- Monitor meerdere zoekwoorden op **Marktplaats.nl** of **2dehands.be**  
 - Alleen **nieuwe advertenties** worden gemeld  
 - Telegram berichten bevatten:
   - Titel
@@ -25,6 +25,7 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
   - Resultaatlimiet per zoekopdracht  
   - Postcode en straal  
   - Nachtmodus (slaapstand)  
+  - Blocklist voor verkopers  
 - Handmatige zoekactie mogelijk via de GUI  
 
 ---
@@ -47,23 +48,39 @@ Na het starten is de webinterface bereikbaar via de ingestelde poort.
 
 
 ```yaml
-version: "3.8"
-
 services:
-  mpwatchter:
-    image: ghcr.io/terrorsource/mpwatchter:latest
-    container_name: mpwatchter
+  mpwatcher:
+    image: makooy/mpwatcher:latest
+    container_name: mpwatcher
     restart: unless-stopped
     network_mode: bridge
     environment:
       - TZ=Europe/Amsterdam
-      - PUID=1000
-      - PGID=1000
     ports:
       - "8000:8000"
     volumes:
-      - /path/to/mpwatchter-config:/config
+      - /path/to/mpwatcher-config:/config
 ```
+
+> ℹ️ Het oude image `makooy/mpwatchter` (typo) wordt tijdelijk nog mee-gepusht,
+> maar gebruik voortaan `makooy/mpwatcher`.
+
+De container heeft een ingebouwde healthcheck op `/health` die ook de interne
+scheduler bewaakt: blijft die hangen, dan wordt de container unhealthy gemeld
+en kan Docker/Portainer hem automatisch herstarten.
+
+**Goed om te weten:**
+
+- De container draait als non-root gebruiker (uid `1000`). Zorg dat de
+  host-map die je aan `/config` koppelt schrijfbaar is voor uid 1000.
+- Instellingen en zoekwoorden staan in `results.db` (SQLite). Bestaande
+  `settings.json` / `keywords.json` uit oudere versies worden bij de eerste
+  start automatisch geïmporteerd en hernoemd naar `*.imported`.
+- Per zoekwoord worden maximaal 500 resultaten bewaard; oudere worden
+  automatisch opgeruimd.
+- Dezelfde advertentie die op meerdere zoekwoorden matcht wordt maar één
+  keer via Telegram gemeld.
+
 ---
 
 ## ⚙️ Configuratie via Web-GUI
@@ -72,6 +89,8 @@ Ga in de webinterface naar **Configuratie**.
 
 ### 🔁 Zoekinstellingen
 
+- **Marketplace**  
+  Marktplaats.nl of 2dehands.be  
 - **Standaard interval (minuten)**  
   Wordt gebruikt voor nieuwe zoekwoorden  
 - **Limiet per zoekopdracht**  
@@ -103,6 +122,18 @@ Gebruik de knop **“Test Telegram”** om te controleren of alles werkt.
 
 ---
 
+## 🚫 Blocklist verkopers
+
+Onder **Configuratie → Blocklist verkopers** kun je verkopers uitsluiten
+(één naam per regel). Advertenties van deze verkopers worden genegeerd en
+dus ook niet via Telegram gemeld.
+
+Op de resultatenpagina van een zoekwoord staat per advertentie een
+**Blokkeer**-knop om de verkoper direct aan de blocklist toe te voegen
+(de blocklist wordt daarbij automatisch ingeschakeld).
+
+---
+
 ## 🔍 Zoekwoorden beheren
 
 Via het **Overzicht** in de GUI:
@@ -121,6 +152,9 @@ Via het **Overzicht** in de GUI:
 ✅ Alleen **nieuwe advertenties** worden doorgestuurd  
 ✅ Duplicaten worden automatisch gefilterd  
 
+> ℹ️ Stel je een min- of maxprijs in, dan vallen advertenties zonder
+> bruikbare prijs (zoals *Bieden* of *Gratis*) buiten de resultaten.
+
 ---
 
 ## 🧪 Handmatig zoeken
@@ -131,3 +165,15 @@ Via het **Overzicht** in de GUI:
   - optioneel direct via Telegram  
 
 Handig om nieuwe instellingen te testen.
+
+---
+
+## 🛠️ Ontwikkelen & tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Lokaal draaien zonder Docker kan met `python app.py`; zet eventueel
+`MPWATCHER_CONFIG_DIR` naar een lokale map (standaard `/config`).
