@@ -50,7 +50,7 @@ Na het starten is de webinterface bereikbaar via de ingestelde poort.
 ```yaml
 services:
   mpwatcher:
-    image: makooy/mpwatcher:latest
+    image: ghcr.io/terrorsource/mpwatcher:latest
     container_name: mpwatcher
     restart: unless-stopped
     network_mode: bridge
@@ -62,8 +62,10 @@ services:
       - /path/to/mpwatcher-config:/config
 ```
 
-> ℹ️ Het oude image `makooy/mpwatchter` (typo) wordt tijdelijk nog mee-gepusht,
-> maar gebruik voortaan `makooy/mpwatcher`.
+> ℹ️ Het image staat op GitHub Container Registry. Het oude Docker Hub-image
+> (`makooy/mpwatchter`) wordt niet meer bijgewerkt — stap over op
+> `ghcr.io/terrorsource/mpwatcher`. Naast `:latest` is per release ook een
+> versie-tag beschikbaar (bijv. `:v18`).
 
 De container heeft een ingebouwde healthcheck op `/health` die ook de interne
 scheduler bewaakt: blijft die hangen, dan wordt de container unhealthy gemeld
