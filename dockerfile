@@ -16,7 +16,12 @@ RUN useradd --create-home --uid 1000 mpwatcher \
     && chown -R mpwatcher:mpwatcher /config /app
 USER mpwatcher
 
-ENV MPWATCHER_CONFIG_DIR=/config
+# Versienummer: door CI meegegeven (release-tag of commit-sha)
+ARG APP_VERSION=dev
+
+ENV PYTHONUNBUFFERED=1 \
+    MPWATCHER_CONFIG_DIR=/config \
+    MPWATCHER_VERSION=$APP_VERSION
 
 EXPOSE 8000
 

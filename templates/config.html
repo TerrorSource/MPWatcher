@@ -118,6 +118,14 @@
           </select>
         </div>
 
+        <div class="form-field">
+          <label class="form-label">Melding bij prijsverlaging</label>
+          <select class="select" name="price_drop_alerts">
+            <option value="nee" {% if not settings.price_drop_alerts %}selected{% endif %}>Nee</option>
+            <option value="ja" {% if settings.price_drop_alerts %}selected{% endif %}>Ja</option>
+          </select>
+        </div>
+
         <div class="btn-group">
           <button class="btn btn-primary" type="submit">Opslaan</button>
         </div>

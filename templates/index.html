@@ -106,22 +106,24 @@
           {# Eén edit-formulier per rij; de inputs in de cellen verwijzen ernaar
              via het form-attribuut, zodat alle velden samen worden opgestuurd. #}
           <form id="kw-edit-{{ kw.id }}" method="post"
-                action="{{ url_for('edit_keyword', keyword_id=kw.id) }}">
-            <input type="hidden" name="term" value="{{ kw.term }}">
-          </form>
+                action="{{ url_for('edit_keyword', keyword_id=kw.id) }}"></form>
 
           <div class="table-row">
             <div class="table-cell-title">
-              <a href="{{ kw.mp_url }}" target="_blank" rel="noopener noreferrer"
-                 style="color: var(--mp-orange-soft); text-decoration: none; font-weight: 500;">
-                {{ kw.term }}
-              </a>
-              <span class="table-chip">
+              <div class="inline-input-group">
+                <input class="input" type="text" name="term" required
+                       form="kw-edit-{{ kw.id }}" value="{{ kw.term }}"
+                       style="max-width:none;text-align:left;flex:1;"
+                       onchange="this.form.submit()">
+                <a href="{{ kw.mp_url }}" target="_blank" rel="noopener noreferrer"
+                   class="btn btn-ghost" title="Open zoekopdracht op de marketplace">↗</a>
+              </div>
+              <span class="table-chip" title="{{ kw.last_run_at }}">
                 Laatst gezocht:
                 {% if kw.last_run_at == "Nooit" %}
                   <span style="color:#fecaca;">Nooit</span>
                 {% else %}
-                  {{ kw.last_run_at }}
+                  {{ kw.last_run_display }}
                 {% endif %}
               </span>
             </div>
@@ -160,7 +162,7 @@
                 <button type="submit" class="btn btn-primary">Handmatig</button>
               </form>
 
-              <a href="{{ url_for('results', keyword_id=kw.id) }}" class="btn btn-soft">Resultaten</a>
+              <a href="{{ url_for('results', keyword_id=kw.id) }}" class="btn btn-soft">Resultaten ({{ kw.result_count }})</a>
 
               <form method="post" action="{{ url_for('reset_keyword', keyword_id=kw.id) }}">
                 <button type="submit" class="btn btn-ghost">Reset</button>

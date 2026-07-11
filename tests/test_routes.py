@@ -18,7 +18,16 @@ def _first_keyword_id():
 def test_health_ok(client):
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.get_json() == {"status": "ok"}
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert "version" in data
+
+
+def test_health_unhealthy_when_config_readonly(client, monkeypatch):
+    monkeypatch.setattr(app, "_config_writable", lambda: False)
+    resp = client.get("/health")
+    assert resp.status_code == 503
+    assert resp.get_json()["status"] == "unhealthy"
 
 
 def test_index_renders(client):
@@ -157,3 +166,68 @@ def test_migration_preserves_keyword_ids(tmp_path, monkeypatch):
     assert kws["beta"]["id"] == 7
     assert kws["dubbel-id"]["id"] not in (2, 7)  # botsende id krijgt een nieuwe
     assert kws["beta"]["last_run_at"] == "2025-12-01T10:00:00"
+
+
+def test_price_drop_detection(client):
+    client.post("/keyword/add", data={"term": "prijsdaling-test"})
+    kid = _first_keyword_id()
+
+    ad = {
+        "ad_id": "pd1", "title": "Fiets", "price": "€ 250,00", "price_cents": 25000,
+        "url": "https://example.com/pd1", "image_url": "", "posted_at": "", "seller": "",
+    }
+    app.insert_new_ads(kid, [dict(ad)])
+
+    # Zelfde prijs -> geen daling
+    assert app.find_price_drops(kid, [dict(ad)]) == []
+
+    # Lagere prijs -> daling gedetecteerd
+    cheaper = dict(ad, price="€ 195,00", price_cents=19500)
+    drops = app.find_price_drops(kid, [cheaper])
+    assert len(drops) == 1
+    _, old_c, new_c = drops[0]
+    assert (old_c, new_c) == (25000, 19500)
+
+    # Hogere prijs of onbekende prijs -> geen melding
+    assert app.find_price_drops(kid, [dict(ad, price_cents=30000)]) == []
+    assert app.find_price_drops(kid, [dict(ad, price_cents=None)]) == []
+
+    # Na update_known_ads is de opgeslagen prijs ververst -> zelfde daling niet nogmaals
+    app.update_known_ads(kid, [cheaper])
+    assert app.find_price_drops(kid, [cheaper]) == []
+
+    client.post(f"/keyword/{kid}/delete")
+
+
+def test_result_counts(client):
+    client.post("/keyword/add", data={"term": "count-test"})
+    kid = _first_keyword_id()
+    assert app.get_result_counts().get(kid, 0) == 0
+
+    ads = [
+        {"ad_id": f"c{i}", "title": f"Ad {i}", "price": "", "price_cents": None,
+         "url": f"https://example.com/c{i}", "image_url": "", "posted_at": "", "seller": ""}
+        for i in range(3)
+    ]
+    app.insert_new_ads(kid, ads)
+    assert app.get_result_counts()[kid] == 3
+
+    client.post(f"/keyword/{kid}/delete")
+
+
+def test_format_relative_time():
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    assert app.format_relative_time("Nooit") == "Nooit"
+    assert app.format_relative_time("") == "Nooit"
+    assert app.format_relative_time(now.isoformat(timespec="seconds")) == "zojuist"
+    assert app.format_relative_time((now - timedelta(minutes=5)).isoformat(timespec="seconds")) == "5 min geleden"
+    assert app.format_relative_time((now - timedelta(hours=3)).isoformat(timespec="seconds")) == "3 uur geleden"
+    assert app.format_relative_time((now - timedelta(days=1, hours=1)).isoformat(timespec="seconds")) == "gisteren"
+    assert app.format_relative_time((now - timedelta(days=3)).isoformat(timespec="seconds")) == "3 dagen geleden"
+    assert app.format_relative_time("onzin") == "onzin"
+
+
+def test_format_cents():
+    assert app.format_cents(19500) == "€ 195,00"
+    assert app.format_cents(950) == "€ 9,50"

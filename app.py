@@ -34,6 +34,14 @@ logger = logging.getLogger("mpwatcher")
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mpwatcher-dev")
 
+# Versienummer: door CI meegegeven als build-arg (release-tag of commit-sha).
+APP_VERSION = os.environ.get("MPWATCHER_VERSION", "dev")
+
+
+@app.context_processor
+def _inject_version():
+    return {"app_version": APP_VERSION}
+
 BASE_DIR = Path(__file__).resolve().parent
 # MPWATCHTER_CONFIG_DIR is de oude (typo) naam; fallback voor bestaande deployments
 CONFIG_DIR = Path(
@@ -55,6 +63,10 @@ MAX_RESULTS_PER_KEYWORD = 500
 # /health meldt unhealthy als de scheduler zo lang geen teken van leven gaf.
 SCHEDULER_STALE_SECONDS = 300
 
+# Pauze tussen twee zoekacties binnen één schedulerronde, zodat de requests
+# naar Marktplaats gespreid worden in plaats van in één burst.
+SEARCH_SPACING_SECONDS = 5
+
 DEFAULT_SETTINGS = {
     "marketplace": "marktplaats",  # marktplaats | 2dehands
     "default_interval_minutes": 15,
@@ -70,6 +82,7 @@ DEFAULT_SETTINGS = {
     "telegram_bot_id": "",
     "telegram_chat_id": "",
     "manual_telegram": False,
+    "price_drop_alerts": True,
 
     # Blocklist
     "blocklist_enabled": False,
@@ -147,6 +160,8 @@ def init_db() -> None:
             for col in ("posted_at", "seller", "posted_ts"):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE results ADD COLUMN {col} TEXT")
+            if "price_cents" not in cols:
+                conn.execute("ALTER TABLE results ADD COLUMN price_cents INTEGER")
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_results_ad_id ON results(ad_id)"
@@ -154,6 +169,7 @@ def init_db() -> None:
 
         _import_legacy_json(conn)
         _backfill_posted_ts(conn)
+        _backfill_price_cents(conn)
     finally:
         conn.close()
 
@@ -253,6 +269,22 @@ def _backfill_posted_ts(conn: sqlite3.Connection) -> None:
     logger.info("posted_ts ingevuld voor %s bestaande resultaten", len(updates))
 
 
+def _backfill_price_cents(conn: sqlite3.Connection) -> None:
+    """Vul price_cents (voor prijsverlaging-detectie) voor rijen uit oudere versies."""
+    rows = conn.execute(
+        "SELECT id, price FROM results WHERE price_cents IS NULL AND price != ''"
+    ).fetchall()
+    updates = []
+    for row in rows:
+        cents = parse_price_to_cents({}, row["price"])
+        if cents is not None:
+            updates.append((cents, row["id"]))
+    if updates:
+        with conn:
+            conn.executemany("UPDATE results SET price_cents = ? WHERE id = ?", updates)
+        logger.info("price_cents ingevuld voor %s bestaande resultaten", len(updates))
+
+
 # ------------------------------------------------------------------------------
 # Helpers: settings
 # ------------------------------------------------------------------------------
@@ -296,7 +328,7 @@ def load_settings() -> dict:
     mp = str(merged.get("marketplace") or "marktplaats").strip().lower()
     merged["marketplace"] = "2dehands" if mp in ("2dehands", "2dehands.be", "2dehandsbe") else "marktplaats"
 
-    for key in ("sleep_mode", "manual_telegram", "blocklist_enabled"):
+    for key in ("sleep_mode", "manual_telegram", "blocklist_enabled", "price_drop_alerts"):
         merged[key] = bool(merged.get(key))
 
     if not isinstance(merged.get("blocked_sellers"), list):
@@ -561,6 +593,36 @@ def parse_price_to_cents(price_info, price_display: str) -> Optional[int]:
     return None
 
 
+def format_cents(cents: int) -> str:
+    return f"€ {cents/100:.2f}".replace(".", ",")
+
+
+def format_relative_time(iso_str: str) -> str:
+    """'2026-06-12T14:03:00' -> '5 min geleden' (voor het overzicht)."""
+    if not iso_str or iso_str == "Nooit":
+        return "Nooit"
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except Exception:
+        return iso_str
+
+    secs = int((datetime.now() - dt).total_seconds())
+    if secs < 60:
+        return "zojuist"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins} min geleden"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours} uur geleden"
+    days = hours // 24
+    if days == 1:
+        return "gisteren"
+    if days < 7:
+        return f"{days} dagen geleden"
+    return dt.strftime("%d-%m-%Y")
+
+
 # ------------------------------------------------------------------------------
 # Blocklist helpers
 # ------------------------------------------------------------------------------
@@ -812,6 +874,47 @@ def get_known_ad_ids(keyword_id: int) -> set[str]:
     return {row["ad_id"] for row in rows}
 
 
+def get_result_counts() -> dict[int, int]:
+    """Aantal opgeslagen resultaten per zoekwoord (voor het overzicht)."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT keyword_id, COUNT(*) AS n FROM results GROUP BY keyword_id"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {row["keyword_id"]: row["n"] for row in rows}
+
+
+def find_price_drops(keyword_id: int, ads: list[dict]) -> list[tuple[dict, int, int]]:
+    """Vergelijk verse prijzen van bekende advertenties met de opgeslagen prijs.
+    Geeft (ad, oude_centen, nieuwe_centen) terug voor elke prijsverlaging.
+    Aanroepen vóór update_known_ads, anders is de oude prijs al overschreven."""
+    if not ads:
+        return []
+
+    conn = _connect()
+    try:
+        stored: dict[str, Optional[int]] = {}
+        for ad in ads:
+            row = conn.execute(
+                "SELECT price_cents FROM results WHERE keyword_id = ? AND ad_id = ?",
+                (keyword_id, ad["ad_id"]),
+            ).fetchone()
+            if row:
+                stored[ad["ad_id"]] = row["price_cents"]
+    finally:
+        conn.close()
+
+    drops = []
+    for ad in ads:
+        new_c = ad.get("price_cents")
+        old_c = stored.get(ad["ad_id"])
+        if isinstance(new_c, int) and isinstance(old_c, int) and new_c < old_c:
+            drops.append((ad, old_c, new_c))
+    return drops
+
+
 def insert_new_ads(keyword_id: int, ads: list[dict]) -> list[dict]:
     """Voeg nieuwe advertenties toe. Markeert per ad of dezelfde advertentie al
     via een ander zoekwoord bekend was (dan geen dubbele Telegram-melding)."""
@@ -838,12 +941,13 @@ def insert_new_ads(keyword_id: int, ads: list[dict]) -> list[dict]:
                     cur.execute(
                         """
                         INSERT INTO results
-                            (keyword_id, ad_id, title, price, url, image_url, seller,
+                            (keyword_id, ad_id, title, price, price_cents, url, image_url, seller,
                              first_seen_at, posted_at, posted_ts)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             keyword_id, ad["ad_id"], ad.get("title", ""), ad.get("price", ""),
+                            ad.get("price_cents"),
                             ad.get("url", ""), ad.get("image_url", ""), ad.get("seller", ""),
                             now_iso, ad.get("posted_at", ""), posted_ts,
                         ),
@@ -880,6 +984,7 @@ def update_known_ads(keyword_id: int, ads: list[dict]) -> None:
                     SET
                         title = COALESCE(NULLIF(?, ''), title),
                         price = COALESCE(NULLIF(?, ''), price),
+                        price_cents = COALESCE(?, price_cents),
                         url = COALESCE(NULLIF(?, ''), url),
                         image_url = CASE
                             WHEN (image_url IS NULL OR image_url = '') AND ? != '' THEN ?
@@ -900,7 +1005,8 @@ def update_known_ads(keyword_id: int, ads: list[dict]) -> None:
                     WHERE keyword_id = ? AND ad_id = ?
                     """,
                     (
-                        ad.get("title", ""), ad.get("price", ""), ad.get("url", ""),
+                        ad.get("title", ""), ad.get("price", ""), ad.get("price_cents"),
+                        ad.get("url", ""),
                         ad.get("image_url", ""), ad.get("image_url", ""),
                         posted_at, posted_at,
                         posted_ts, posted_ts,
@@ -993,19 +1099,15 @@ def send_telegram_message(text: str, settings: dict) -> None:
         logger.warning("Telegram sendMessage mislukt: %s", exc)
 
 
-def send_telegram_ad(ad: dict, settings: dict) -> None:
+def _send_ad_via_telegram(caption: str, ad: dict, settings: dict) -> None:
     bot_id = (settings.get("telegram_bot_id") or "").strip()
     chat_id = (settings.get("telegram_chat_id") or "").strip()
     if not bot_id or not chat_id:
         return
 
     title = (ad.get("title") or "").strip()
-    price = (ad.get("price") or "").strip()
     url = (ad.get("url") or "").strip()
     image_url = (ad.get("image_url") or "").strip()
-    posted_at = (ad.get("posted_at") or "").strip()
-
-    caption = f"Titel = {title}\nPrijs = {price}" + (f"\nDatum = {posted_at}" if posted_at else "")
 
     reply_markup = {"inline_keyboard": [[{"text": "Bekijk advertentie", "url": url}]]}
 
@@ -1033,6 +1135,24 @@ def send_telegram_ad(ad: dict, settings: dict) -> None:
             )
     except Exception as exc:
         logger.warning("Telegram-melding voor '%s' mislukt: %s", title, exc)
+
+
+def send_telegram_ad(ad: dict, settings: dict) -> None:
+    title = (ad.get("title") or "").strip()
+    price = (ad.get("price") or "").strip()
+    posted_at = (ad.get("posted_at") or "").strip()
+
+    caption = f"Titel = {title}\nPrijs = {price}" + (f"\nDatum = {posted_at}" if posted_at else "")
+    _send_ad_via_telegram(caption, ad, settings)
+
+
+def send_telegram_price_drop(ad: dict, old_cents: int, new_cents: int, settings: dict) -> None:
+    title = (ad.get("title") or "").strip()
+    caption = (
+        f"📉 Prijsverlaging!\nTitel = {title}\n"
+        f"Prijs = {format_cents(old_cents)} → {format_cents(new_cents)}"
+    )
+    _send_ad_via_telegram(caption, ad, settings)
 
 
 # ------------------------------------------------------------------------------
@@ -1076,12 +1196,25 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
             if (ad.get("seller") or "").strip().lower() not in blocked
         ]
 
+    # Prijsverlagingen detecteren vóórdat update_known_ads de oude prijs overschrijft
+    price_drops = (
+        find_price_drops(keyword["id"], known_ads)
+        if settings.get("price_drop_alerts") else []
+    )
+
     update_known_ads(keyword["id"], known_ads)
     new_ads = insert_new_ads(keyword["id"], new_candidates)
     prune_results_for_keyword(keyword["id"])
 
     notify = (not manual) or settings.get("manual_telegram")
     if notify:
+        for ad, old_c, new_c in price_drops:
+            logger.info(
+                "Prijsverlaging voor '%s': %s -> %s",
+                ad.get("title"), format_cents(old_c), format_cents(new_c),
+            )
+            send_telegram_price_drop(ad, old_c, new_c, settings)
+
         for ad in new_ads:
             if ad.get("_seen_elsewhere"):
                 logger.info(
@@ -1153,6 +1286,7 @@ def scheduler_loop():
                     except Exception:
                         logger.exception("Zoekactie voor '%s' mislukt", kw.get("term"))
                         continue
+                    time_module.sleep(SEARCH_SPACING_SECONDS)
 
             time_module.sleep(60)
         except Exception:
@@ -1181,9 +1315,12 @@ def start_background_worker():
 def index():
     settings = load_settings()
     keywords = load_keywords()
+    counts = get_result_counts()
 
     for kw in keywords:
         kw["mp_url"] = build_search_url(kw["term"], settings)
+        kw["result_count"] = counts.get(kw["id"], 0)
+        kw["last_run_display"] = format_relative_time(kw["last_run_at"])
 
     return render_template(
         "index.html",
@@ -1399,6 +1536,7 @@ def config_save_telegram():
         "telegram_bot_id": (request.form.get("telegram_bot_id") or "").strip(),
         "telegram_chat_id": (request.form.get("telegram_chat_id") or "").strip(),
         "manual_telegram": _form_bool(request.form.get("manual_telegram")),
+        "price_drop_alerts": _form_bool(request.form.get("price_drop_alerts")),
     })
     flash("Telegram-instellingen opgeslagen.", "success")
     return redirect(url_for("config_view"))
@@ -1416,13 +1554,35 @@ def config_test_telegram():
 # Healthcheck
 # ------------------------------------------------------------------------------
 
+def _config_writable() -> bool:
+    """Controleer of de config-map (en dus de database) beschrijfbaar is.
+    Vangt bijv. NAS-permissieproblemen die pas na de start ontstaan."""
+    try:
+        probe = CONFIG_DIR / ".health-write-test"
+        probe.write_text("ok")
+        probe.unlink()
+        return os.access(DB_FILE, os.W_OK)
+    except Exception:
+        return False
+
+
 @app.route("/health")
 def health():
+    if not _config_writable():
+        return {
+            "status": "unhealthy",
+            "reason": "config-dir niet schrijfbaar",
+            "version": APP_VERSION,
+        }, 503
     if _worker_thread_started and _last_heartbeat is not None:
         age = time_module.monotonic() - _last_heartbeat
         if age > SCHEDULER_STALE_SECONDS:
-            return {"status": "unhealthy", "scheduler_stale_seconds": int(age)}, 503
-    return {"status": "ok"}
+            return {
+                "status": "unhealthy",
+                "scheduler_stale_seconds": int(age),
+                "version": APP_VERSION,
+            }, 503
+    return {"status": "ok", "version": APP_VERSION}
 
 
 # ------------------------------------------------------------------------------

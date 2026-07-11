@@ -14,6 +14,7 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
 
 - Monitor meerdere zoekwoorden op **Marktplaats.nl** of **2dehands.be**  
 - Alleen **nieuwe advertenties** worden gemeld  
+- Optioneel een melding bij een **prijsverlaging** van een bekende advertentie  
 - Telegram berichten bevatten:
   - Titel
   - Prijs
@@ -60,12 +61,18 @@ services:
       - "8000:8000"
     volumes:
       - /path/to/mpwatcher-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 ```
 
-> ℹ️ Het image staat op GitHub Container Registry. Het oude Docker Hub-image
+> ℹ️ Het image staat op GitHub Container Registry en is beschikbaar voor
+> **amd64 en arm64** (dus ook Raspberry Pi). Het oude Docker Hub-image
 > (`makooy/mpwatchter`) wordt niet meer bijgewerkt — stap over op
 > `ghcr.io/terrorsource/mpwatcher`. Naast `:latest` is per release ook een
-> versie-tag beschikbaar (bijv. `:v18`).
+> versie-tag beschikbaar (bijv. `:v19`).
 
 De container heeft een ingebouwde healthcheck op `/health` die ook de interne
 scheduler bewaakt: blijft die hangen, dan wordt de container unhealthy gemeld
@@ -82,6 +89,7 @@ en kan Docker/Portainer hem automatisch herstarten.
   automatisch opgeruimd.
 - Dezelfde advertentie die op meerdere zoekwoorden matcht wordt maar één
   keer via Telegram gemeld.
+- De draaiende versie staat onderaan elke pagina en in `/health`.
 
 ---
 
@@ -119,6 +127,8 @@ Vul de Telegram gegevens in onder **Configuratie → Telegram**:
 
 - Telegram Bot Token  
 - Telegram Chat ID  
+- **Melding bij prijsverlaging** (aan/uit) — stuurt een 📉-melding wanneer
+  een al bekende advertentie in prijs zakt  
 
 Gebruik de knop **“Test Telegram”** om te controleren of alles werkt.
 

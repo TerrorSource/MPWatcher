@@ -18,7 +18,8 @@
   {% if ads %}
     <div class="table-wrapper">
       <!-- Header -->
-      <div class="table-header" style="grid-template-columns: 110px 1fr 140px 130px 75px 120px;">
+      <div class="table-header" style="grid-template-columns: 70px 110px 1fr 140px 130px 75px 120px;">
+        <div>Foto</div>
         <div>Datum</div>
         <div>Titel</div>
         <div>Prijs</div>
@@ -28,7 +29,19 @@
       </div>
 
       {% for ad in ads %}
-        <div class="table-row" style="grid-template-columns: 110px 1fr 140px 130px 75px 120px;">
+        <div class="table-row" style="grid-template-columns: 70px 110px 1fr 140px 130px 75px 120px;">
+          <!-- Foto -->
+          <div>
+            {% if ad.image_url %}
+              <a href="{{ ad.url }}" target="_blank" rel="noopener noreferrer">
+                <img src="{{ ad.image_url }}" alt="" loading="lazy"
+                     style="width:60px;height:45px;object-fit:cover;border-radius:8px;display:block;">
+              </a>
+            {% else %}
+              <span style="color:var(--text-muted);">—</span>
+            {% endif %}
+          </div>
+
           <!-- Datum -->
           <div style="color:var(--text-muted);">
             {{ ad.posted_at if ad.posted_at else "—" }}

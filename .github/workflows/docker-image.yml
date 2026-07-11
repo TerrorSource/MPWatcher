@@ -30,13 +30,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Bepaal versienummer
+        id: version
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          # Bij een release wordt naast :latest ook een versie-tag gepusht (bijv. :v18).
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+          # Bij een release wordt naast :latest ook een versie-tag gepusht (bijv. :v19).
           tags: |
             ghcr.io/terrorsource/mpwatcher:latest
             ghcr.io/terrorsource/mpwatcher:${{ github.sha }}
