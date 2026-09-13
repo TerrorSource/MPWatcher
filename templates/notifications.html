@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Meldingen · MPWatcher{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-kicker">Logboek</div>
+      <div class="card-title">Meldingen</div>
+      <p class="card-description">
+        Wat er via Telegram is gemeld — en wat juist <em>niet</em>, en waarom
+        (herplaatsing, al gemeld via ander zoekwoord, stille eerste run). De laatste {{ items|length }} regels.
+      </p>
+    </div>
+    <a class="btn btn-soft" href="{{ url_for('index') }}">← Terug</a>
+  </div>
+
+  {% if items %}
+    <div class="table-wrapper">
+      <div class="table-header table-header--notifications">
+        <div>Wanneer</div>
+        <div>Soort</div>
+        <div>Zoekwoord</div>
+        <div>Advertentie</div>
+        <div>Details</div>
+        <div style="text-align:right;">Telegram</div>
+      </div>
+      {% for it in items %}
+        <div class="table-row table-row--notifications">
+          <div class="chip-muted" title="{{ it.created_at }}">{{ it.created_display }}</div>
+          <div>
+            {% if it.kind == "new" %}<span class="badge-soft">Nieuw</span>
+            {% elif it.kind == "price_drop" %}<span class="badge-price">📉 Prijsverlaging</span>
+            {% elif it.kind == "digest" %}<span class="badge-pill">Samenvatting</span>
+            {% elif it.kind == "silent" %}<span class="badge-pill">Stille run</span>
+            {% else %}<span class="badge-pill" style="border-color:rgba(248,113,113,0.5);color:#fecaca;">Onderdrukt</span>
+            {% endif %}
+          </div>
+          <div class="chip-muted">{{ it.term or "—" }}</div>
+          <div style="min-width:0;overflow:hidden;">
+            {% if it.url %}
+              <a href="{{ it.url }}" target="_blank" rel="noopener noreferrer"
+                 style="color:var(--mp-orange-soft);text-decoration:none;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                {{ it.title }}
+              </a>
+            {% elif it.title %}
+              <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ it.title }}</div>
+            {% else %}
+              <span class="chip-muted">—</span>
+            {% endif %}
+            {% if it.price %}<div class="table-chip">{{ it.price }}</div>{% endif %}
+          </div>
+          <div class="chip-muted" style="min-width:0;overflow:hidden;text-overflow:ellipsis;">{{ it.detail or "" }}</div>
+          <div style="text-align:right;">
+            {% if it.kind in ("suppressed", "silent") %}
+              <span class="chip-muted">—</span>
+            {% elif it.sent %}
+              <span style="color:#bbf7d0;">✓ verstuurd</span>
+            {% else %}
+              <span style="color:#fecaca;" title="Telegram niet geconfigureerd of verzenden mislukt (zie logs)">✗ niet verstuurd</span>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <strong>Nog geen meldingen.</strong>
+      Zodra een zoekactie iets nieuws vindt (of iets onderdrukt) verschijnt dat hier.
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

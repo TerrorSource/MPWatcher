@@ -1,0 +1,108 @@
+"""Constanten, paden, logger en default-instellingen."""
+import logging
+import os
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("mpwatcher")
+
+# Versienummer: door CI meegegeven als build-arg (release-tag of commit-sha).
+APP_VERSION = os.environ.get("MPWATCHER_VERSION", "dev")
+
+# Projectmap (met templates/ en static/), één niveau boven dit package.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# MPWATCHTER_CONFIG_DIR is de oude (typo) naam; fallback voor bestaande deployments
+CONFIG_DIR = Path(
+    os.environ.get("MPWATCHER_CONFIG_DIR")
+    or os.environ.get("MPWATCHTER_CONFIG_DIR")
+    or "/config"
+)
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Legacy JSON-bestanden; worden bij de eerste start eenmalig in de database
+# geïmporteerd en daarna hernoemd naar *.imported.
+SETTINGS_FILE = CONFIG_DIR / "settings.json"
+KEYWORDS_FILE = CONFIG_DIR / "keywords.json"
+DB_FILE = CONFIG_DIR / "results.db"
+
+# Maximaal bewaarde resultaten per zoekwoord; oudere rijen worden opgeruimd.
+MAX_RESULTS_PER_KEYWORD = 500
+
+# Aantal resultaten per pagina op de resultatenpagina.
+RESULTS_PAGE_SIZE = 100
+
+# /health meldt unhealthy als de scheduler zo lang geen teken van leven gaf.
+SCHEDULER_STALE_SECONDS = 300
+
+# Pauze tussen twee zoekacties binnen één schedulerronde, zodat de requests
+# naar Marktplaats gespreid worden in plaats van in één burst.
+SEARCH_SPACING_SECONDS = 5
+
+# De schrijftest in /health wordt zo lang gecachet (scheelt schrijfacties op de NAS).
+CONFIG_CHECK_TTL_SECONDS = 300
+
+# Maximaal aantal regels in een Telegram-samenvatting (digest).
+DIGEST_MAX_ITEMS = 20
+
+# Bij een subcategorie-filter (dat de API niet zelf toepast) halen we meer
+# advertenties op en filteren we lokaal; dit is de factor en het plafond.
+CATEGORY_OVERSAMPLE = 3
+CATEGORY_MAX_FETCH = 60
+
+DEFAULT_SETTINGS = {
+    "marketplace": "marktplaats",  # marktplaats | 2dehands
+    "default_interval_minutes": 15,
+    "default_limit_per_run": 5,
+
+    "sleep_mode": False,
+    "sleep_start": "23:00",
+    "sleep_end": "07:00",
+
+    "postcode": "",
+    "radius_km": "alle",
+
+    "telegram_bot_id": "",
+    "telegram_chat_id": "",
+    "manual_telegram": False,
+    "price_drop_alerts": True,
+    # Vanaf dit aantal nieuwe advertenties in één run één samenvattend
+    # bericht i.p.v. losse meldingen (0 = altijd losse meldingen).
+    "telegram_digest_threshold": 5,
+
+    # Herplaatsingen (zelfde titel/verkoper/prijs met nieuw id) binnen dit
+    # aantal dagen niet opnieuw melden (0 = uit).
+    "repost_dedup_days": 30,
+
+    # Gereserveerde advertenties overslaan (meestal al verkocht)
+    "skip_reserved": False,
+
+    # Blocklists
+    "blocklist_enabled": False,
+    "blocked_sellers": [],
+    "blocked_titles": [],
+}
+
+# Na een mislukte zoekopdracht (blokkade, storing) wordt het interval van dat
+# zoekwoord per mislukking verdubbeld tot dit maximum, om een tijdelijke
+# blokkade niet te verlengen door te blijven hameren.
+BACKOFF_MAX_HOURS = 6
+
+# Aantal bewaarde regels in het meldingenlogboek.
+NOTIFICATIONS_KEEP = 1000
+
+# Browser-identificatie richting Marktplaats; instelbaar omdat een verouderde
+# User-Agent op termijn geweigerd kan worden.
+USER_AGENT = os.environ.get("MPWATCHER_USER_AGENT") or (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/140.0.0.0 Safari/537.36"
+)
+ACCEPT_LANGUAGE = "nl-NL,nl;q=0.9,en;q=0.5"
+
+
+class MarketplaceError(Exception):
+    """De zoekopdracht bij Marktplaats/2dehands is mislukt (netwerk, blokkade, API-wijziging)."""

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Categorie · {{ keyword.term }} · MPWatcher{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <div class="card-kicker">Categoriefilter</div>
+      <div class="card-title">{{ keyword.term }}</div>
+      <p class="card-description">
+        Kies de categorie waarin dit zoekwoord moet zoeken. De lijst komt live van de
+        marketplace en toont hoeveel advertenties er per categorie zijn voor deze zoekterm.
+        {% if keyword.category_label %}
+          Huidig filter: <strong>{{ keyword.category_label }}</strong>.
+        {% else %}
+          Er is nu geen categoriefilter actief.
+        {% endif %}
+      </p>
+    </div>
+    <a class="btn btn-soft" href="{{ url_for('index') }}">← Terug</a>
+  </div>
+
+  <form method="post" action="{{ url_for('keyword_set_category', keyword_id=keyword.id) }}" class="btn-group" style="margin-bottom:14px;">
+    <input type="hidden" name="category_id" value="">
+    <button type="submit" class="btn {{ 'btn-primary' if not keyword.category_id else 'btn-ghost' }}">
+      Alle categorieën (geen filter)
+    </button>
+  </form>
+
+  {% if categories %}
+    <div class="table-wrapper">
+      {% for cat in categories %}
+        <form method="post" action="{{ url_for('keyword_set_category', keyword_id=keyword.id) }}"
+              class="table-row table-row--categories">
+          <input type="hidden" name="category_id" value="{{ cat.id }}">
+          <input type="hidden" name="category_parent_id" value="{{ cat.parent_id if cat.parent_id is not none }}">
+          <input type="hidden" name="category_label" value="{{ (cat.parent_label ~ ' › ' if cat.parent_label else '') ~ cat.label }}">
+          <div class="table-cell-title" style="{{ 'padding-left:18px;' if cat.parent_id }}">
+            {{ cat.label }}
+            {% if not cat.parent_id %}<span class="badge-pill">hoofdcategorie</span>{% endif %}
+            {% if keyword.category_id == cat.id %}<span class="badge-soft">actief</span>{% endif %}
+          </div>
+          <div class="chip-muted">{{ cat.count }} advertenties</div>
+          <div class="actions-col">
+            <button type="submit" class="btn {{ 'btn-soft' if keyword.category_id == cat.id else 'btn-primary' }}">
+              {{ 'Gekozen' if keyword.category_id == cat.id else 'Kies' }}
+            </button>
+          </div>
+        </form>
+      {% endfor %}
+    </div>
+    <p class="chip-muted" style="margin-top:10px;">
+      Een subcategorie wordt lokaal toegepast (de marketplace filtert alleen op hoofdcategorie);
+      daarvoor haalt MPWatcher per zoekactie wat meer advertenties op.
+    </p>
+  {% else %}
+    <div class="empty-state">
+      <strong>Geen categorieën gevonden.</strong>
+      De marketplace gaf geen categorie-informatie terug voor deze zoekterm.
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

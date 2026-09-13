@@ -29,6 +29,10 @@
              class="nav-link {% if request.endpoint == 'index' %}active{% endif %}">
             Overzicht
           </a>
+          <a href="{{ url_for('notifications') }}"
+             class="nav-link {% if request.endpoint == 'notifications' %}active{% endif %}">
+            Meldingen
+          </a>
           <a href="{{ url_for('config_view') }}"
              class="nav-link {% if request.endpoint in ['config_view', 'config_test_telegram'] %}active{% endif %}">
             Configuratie

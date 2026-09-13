@@ -1,0 +1,9 @@
+# Lint-configuratie (draait in CI en lokaal met `ruff check .`)
+line-length = 130
+target-version = "py313"
+
+[lint]
+select = ["E", "F", "W", "B"]
+ignore = [
+  "E501",  # regellengte: lange SQL-strings en Nederlandse teksten zijn oké
+]

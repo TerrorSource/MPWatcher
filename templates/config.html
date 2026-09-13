@@ -45,6 +45,20 @@
                  value="{{ settings.default_limit_per_run }}">
         </div>
 
+        <div class="form-field">
+          <label class="form-label">Herplaatsingen negeren <span>dagen; dezelfde titel/verkoper/prijs met een nieuw advertentie-id wordt niet opnieuw gemeld. 0 = uit</span></label>
+          <input class="input" type="number" min="0" max="365" name="repost_dedup_days"
+                 value="{{ settings.repost_dedup_days }}">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Gereserveerde advertenties <span>zijn meestal al verkocht</span></label>
+          <select class="select" name="skip_reserved">
+            <option value="nee" {% if not settings.skip_reserved %}selected{% endif %}>Tonen en melden (met label)</option>
+            <option value="ja" {% if settings.skip_reserved %}selected{% endif %}>Overslaan</option>
+          </select>
+        </div>
+
         <div class="divider"></div>
 
         <div class="form-field">
@@ -177,6 +191,38 @@
 
       <div class="btn-group">
         <button class="btn btn-primary" type="submit">Blocklist opslaan</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- GENEGEERDE ADVERTENTIES -->
+  <section class="card" style="margin-top:16px;">
+    <div class="card-header">
+      <div>
+        <div class="card-kicker">Filter</div>
+        <div class="card-title">Genegeerde advertenties</div>
+        <p class="card-description">
+          Advertenties met precies deze titel worden genegeerd (hoofdletters maken niet uit),
+          ook als een verkoper ze opnieuw plaatst. Op de resultatenpagina staat per advertentie
+          een knop <strong>Negeren → Advertentie</strong> om een titel hier direct aan toe te voegen.
+        </p>
+      </div>
+    </div>
+
+    <form method="post" action="{{ url_for('blocklist_titles_save') }}" class="form-grid-1">
+      <div class="form-field">
+        <label class="form-label">Genegeerde advertentietitels (1 per regel)</label>
+        <textarea
+          class="input"
+          name="blocked_titles_text"
+          rows="8"
+          style="border-radius:12px; padding:12px; resize:vertical; min-height:180px;"
+          placeholder="Bijv.&#10;Gezocht: startbewijs marathon Rotterdam&#10;Viking klapschaatsen maat 41"
+        >{{ blocked_titles_text }}</textarea>
+      </div>
+
+      <div class="btn-group">
+        <button class="btn btn-primary" type="submit">Genegeerde advertenties opslaan</button>
       </div>
     </form>
   </section>

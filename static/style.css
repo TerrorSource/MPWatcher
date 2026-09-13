@@ -754,3 +754,118 @@ body {
 .status-dot--stale { background: var(--danger); box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); }
 .status-dot--starting { background: var(--mp-orange-soft); }
 .status-dot--off { background: var(--text-soft); }
+
+/* v21: resultatenpagina heeft een extra kolom (Negeren) */
+
+.table-header--results,
+.table-row--results {
+  grid-template-columns: 70px 110px minmax(0, 1fr) 140px 150px 190px 100px;
+}
+
+@media (max-width: 900px) {
+  .table-row--results {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Categoriekeuze */
+
+.table-row--categories {
+  grid-template-columns: minmax(0, 1fr) 140px 120px;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .table-row--categories {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.chip-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(148, 163, 184, 0.5);
+}
+
+.chip-link:hover {
+  color: var(--mp-orange-soft);
+}
+
+/* Recent gevonden advertenties */
+
+.recent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.recent-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(15, 23, 42, 0.9);
+  background: radial-gradient(circle at top left, rgba(30, 64, 175, 0.35), rgba(15, 23, 42, 0.95));
+  overflow: hidden;
+  text-decoration: none;
+  color: var(--text-main);
+  transition: transform 0.16s ease, border-color 0.16s ease;
+}
+
+.recent-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(148, 163, 184, 0.5);
+}
+
+.recent-card img,
+.recent-card__noimg {
+  width: 100%;
+  height: 130px;
+  object-fit: cover;
+  display: block;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.recent-card__noimg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-soft);
+}
+
+.recent-card__body {
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recent-card__title {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.recent-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+/* Meldingenlogboek */
+
+.table-header--notifications,
+.table-row--notifications {
+  grid-template-columns: 110px 130px 140px minmax(0, 1.6fr) minmax(0, 1fr) 120px;
+}
+
+@media (max-width: 900px) {
+  .table-row--notifications {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -7,6 +7,16 @@ services:
     volumes:
       - ./config:/config
     restart: unless-stopped
+    # Hardening: de app schrijft alleen in /config; de rest van het bestandssysteem
+    # is read-only, /tmp is een tmpfs (gunicorn heeft dat nodig) en de container
+    # heeft geen Linux-capabilities en kan geen extra rechten verwerven.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:

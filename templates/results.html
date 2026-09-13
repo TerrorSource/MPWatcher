@@ -9,11 +9,32 @@
       <div class="card-kicker">Resultaten</div>
       <div class="card-title">{{ keyword.term }}</div>
       <p class="card-description">
-        Gesorteerd op nieuw → oud. Blocklist is <strong>{{ "Aan" if settings.blocklist_enabled else "Uit" }}</strong>.
+        Gesorteerd op nieuw → oud.
+        {% if keyword.category_label %}Categorie: <strong>{{ keyword.category_label }}</strong>.{% endif %}
+        Blocklist verkopers is <strong>{{ "Aan" if settings.blocklist_enabled else "Uit" }}</strong>.
       </p>
     </div>
     <a class="btn btn-soft" href="{{ url_for('index') }}">← Terug</a>
   </div>
+
+  <form method="get" action="{{ url_for('results', keyword_id=keyword.id) }}"
+        class="inline-input-group" style="margin-bottom:12px;flex-wrap:wrap;">
+    <input class="input" type="search" name="q" value="{{ query }}"
+           placeholder="Zoek in titel, verkoper of plaats…"
+           style="max-width:none;text-align:left;flex:1;min-width:200px;">
+    <button type="submit" class="btn btn-soft">Zoeken</button>
+    {% if query %}
+      <a class="btn btn-ghost" href="{{ url_for('results', keyword_id=keyword.id) }}">Wis filter</a>
+    {% endif %}
+    <span class="chip-muted">
+      {% if total %}
+        {{ offset + 1 }}–{{ [offset + page_size, total]|min }} van {{ total }}
+      {% else %}
+        0 resultaten
+      {% endif %}
+      {% if query %}voor “{{ query }}”{% endif %}
+    </span>
+  </form>
 
   {% if ads %}
     <div class="table-wrapper">
@@ -24,7 +45,7 @@
         <div>Titel</div>
         <div>Prijs</div>
         <div>Verkoper</div>
-        <div>Blokkeer</div>
+        <div>Negeren</div>
         <div style="text-align:right;">Bekijk</div>
       </div>
 
@@ -58,6 +79,7 @@
           <!-- Prijs -->
           <div style="white-space:nowrap;">
             {{ ad.price if ad.price else "—" }}
+            {% if ad.reserved %}<div class="table-chip" style="color:#fecaca;">gereserveerd</div>{% endif %}
           </div>
 
           <!-- Verkoper + plaats -->
@@ -66,20 +88,27 @@
               {{ ad.seller if ad.seller else "—" }}
             </div>
             {% if ad.location %}
-              <div class="table-chip" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📍 {{ ad.location }}</div>
+              <div class="table-chip" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                📍 {{ ad.location }}{% if ad.distance_km is not none %} · {{ ad.distance_km }} km{% endif %}
+              </div>
             {% endif %}
           </div>
 
-          <!-- Blokkeer -->
-          <div>
+          <!-- Negeren: deze advertentie (op titel) of de hele verkoper -->
+          <div class="btn-group">
+            <form method="post" action="{{ url_for('blocklist_title_add') }}"
+                  onsubmit="return confirm({{ ("Advertentie '" ~ ad.title ~ "' voortaan negeren? Ook herplaatsingen met dezelfde titel worden dan niet meer gemeld.")|tojson }})">
+              <input type="hidden" name="title" value="{{ ad.title }}">
+              <input type="hidden" name="keyword_id" value="{{ keyword.id }}">
+              <button class="btn btn-ghost" type="submit" title="Deze advertentie (op titel) negeren">Advertentie</button>
+            </form>
             {% if ad.seller %}
-              <form method="post" action="{{ url_for('blocklist_add') }}">
+              <form method="post" action="{{ url_for('blocklist_add') }}"
+                    onsubmit="return confirm({{ ("Verkoper '" ~ ad.seller ~ "' blokkeren? Al zijn/haar advertenties worden dan genegeerd.")|tojson }})">
                 <input type="hidden" name="seller" value="{{ ad.seller }}">
                 <input type="hidden" name="keyword_id" value="{{ keyword.id }}">
-                <button class="btn btn-ghost" type="submit">Blokkeer</button>
+                <button class="btn btn-ghost" type="submit" title="Alle advertenties van deze verkoper blokkeren">Verkoper</button>
               </form>
-            {% else %}
-              <span style="color:var(--text-muted);">—</span>
             {% endif %}
           </div>
 
@@ -90,10 +119,25 @@
         </div>
       {% endfor %}
     </div>
+
+    {% if prev_offset is not none or next_offset is not none %}
+      <div class="btn-group" style="margin-top:12px;justify-content:space-between;">
+        <div>
+          {% if prev_offset is not none %}
+            <a class="btn btn-soft" href="{{ url_for('results', keyword_id=keyword.id, q=query or None, offset=prev_offset or None) }}">← Nieuwer</a>
+          {% endif %}
+        </div>
+        <div>
+          {% if next_offset is not none %}
+            <a class="btn btn-soft" href="{{ url_for('results', keyword_id=keyword.id, q=query or None, offset=next_offset) }}">Ouder →</a>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
   {% else %}
     <div class="empty-state">
       <strong>Geen resultaten gevonden.</strong>
-      Probeer handmatig te zoeken of wacht op de volgende run.
+      {% if query %}Probeer een andere zoekterm of wis het filter.{% else %}Probeer handmatig te zoeken of wacht op de volgende run.{% endif %}
     </div>
   {% endif %}
 </section>

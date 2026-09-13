@@ -16,7 +16,14 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
 - Alleen **nieuwe advertenties** worden gemeld  
 - Optioneel een melding bij een **prijsverlaging** van een bekende advertentie  
 - **Titelfilters** per zoekwoord: uitsluitwoorden (bijv. *gezocht*) en verplichte woorden  
+- **Categoriefilter** per zoekwoord (bijv. alleen *Tickets en Kaartjes*)  
+- **Advertenties negeren** op titel, naast het blokkeren van verkopers  
+- **Herplaatsingen** (zelfde advertentie opnieuw geplaatst) worden niet nogmaals gemeld  
 - Veel nieuwe advertenties tegelijk? Dan één **samenvattend bericht** i.p.v. losse meldingen  
+- Overzicht met de **laatste nieuwe advertenties** over alle zoekwoorden heen  
+- **Meldingenlogboek**: wat is gemeld, wat is onderdrukt en waarom  
+- Gereserveerde advertenties herkenbaar (of overslaan); afstand bij een ingestelde postcode  
+- Automatische **backoff** als de marketplace tijdelijk weigert  
 - Telegram berichten bevatten:
   - Titel
   - Prijs
@@ -33,9 +40,18 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
 
 ---
 
-## 📸 Screenshot
+## 📸 Screenshots
 
-![MPWatcher Dashboard](screenshots/mpwatcher-dashboard.png)
+Overzicht met statuskaart, recent gevonden advertenties en de zoekwoorden:
+
+![MPWatcher overzicht](screenshots/mpwatcher-dashboard.jpg)
+
+Resultaten per zoekwoord, doorzoekbaar, met foto, plaats/afstand en de knoppen
+om een advertentie of verkoper te negeren:
+
+![MPWatcher resultaten](screenshots/mpwatcher-results.jpg)
+
+*(demo-data)*
 
 ---
 
@@ -63,6 +79,14 @@ services:
       - "8000:8000"
     volumes:
       - /path/to/mpwatcher-config:/config
+    # Hardening (optioneel maar aanbevolen): de app schrijft alleen in /config
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
@@ -92,6 +116,13 @@ en kan Docker/Portainer hem automatisch herstarten.
 - Dezelfde advertentie die op meerdere zoekwoorden matcht wordt maar één
   keer via Telegram gemeld.
 - De draaiende versie staat onderaan elke pagina en in `/health`.
+- Weigert de marketplace een zoekopdracht (bijv. HTTP 403/429), dan verdubbelt
+  MPWatcher het interval van dat zoekwoord per mislukking (tot 6 uur) zodat
+  een tijdelijke blokkade niet verlengd wordt. Na een geslaagde run is het
+  interval weer normaal; het overzicht toont hoeveel pogingen er mislukten.
+- De browser-identificatie richting de marketplace is instelbaar met de
+  omgevingsvariabele `MPWATCHER_USER_AGENT` (bijv. als een nieuwere
+  browserversie nodig blijkt).
 
 ---
 
@@ -107,6 +138,12 @@ Ga in de webinterface naar **Configuratie**.
   Wordt gebruikt voor nieuwe zoekwoorden  
 - **Limiet per zoekopdracht**  
   Maximaal aantal advertenties per run (1–20)
+- **Herplaatsingen negeren (dagen)**  
+  Verkopers plaatsen advertenties vaak opnieuw (nieuw advertentie-id, zelfde
+  inhoud). Dezelfde titel + verkoper + prijs binnen dit aantal dagen wordt
+  niet nogmaals gemeld. `0` = uit.
+- **Gereserveerde advertenties**  
+  Tonen en melden met een label (standaard), of volledig overslaan.
 
 ### 🌙 Slaapstand (nachtmodus)
 
@@ -135,9 +172,14 @@ Vul de Telegram gegevens in onder **Configuratie → Telegram**:
   advertenties, dan krijg je één overzichtsbericht in plaats van losse
   meldingen (0 = altijd losse meldingen)  
 
-Meldingen bevatten titel, prijs, plaats van de verkoper, foto en een knop naar
-de advertentie. Bij een tijdelijke Telegram-limiet (te veel berichten) wacht
+Meldingen bevatten zoekwoord, titel, prijs, plaats van de verkoper (met
+afstand als je een postcode hebt ingesteld), foto en een knop naar de
+advertentie. Bij een tijdelijke Telegram-limiet (te veel berichten) wacht
 MPWatcher automatisch en probeert het opnieuw.
+
+Onder **Meldingen** in de navigatie staat het logboek: elke verstuurde melding
+én elke onderdrukte (herplaatsing, al gemeld via een ander zoekwoord, stille
+eerste run) met de reden — handig bij "waarom kreeg ik dit (niet)?".
 
 Gebruik de knop **“Test Telegram”** om te controleren of alles werkt.
 
@@ -149,9 +191,18 @@ Onder **Configuratie → Blocklist verkopers** kun je verkopers uitsluiten
 (één naam per regel). Advertenties van deze verkopers worden genegeerd en
 dus ook niet via Telegram gemeld.
 
-Op de resultatenpagina van een zoekwoord staat per advertentie een
-**Blokkeer**-knop om de verkoper direct aan de blocklist toe te voegen
+Op de resultatenpagina van een zoekwoord staat per advertentie een knop
+**Negeren → Verkoper** om de verkoper direct aan de blocklist toe te voegen
 (de blocklist wordt daarbij automatisch ingeschakeld).
+
+### Advertenties negeren op titel
+
+Wil je niet de hele verkoper blokkeren maar één specifieke advertentie, gebruik
+dan **Negeren → Advertentie**. De titel komt op de lijst *Genegeerde
+advertenties* (Configuratie): advertenties met precies die titel worden niet
+meer opgeslagen of gemeld — ook niet als de verkoper ze opnieuw plaatst — en
+bestaande resultaten met die titel worden verwijderd. De lijst is ook
+handmatig te bewerken (één titel per regel, hoofdletters maken niet uit).
 
 ---
 
@@ -170,11 +221,16 @@ Via het **Overzicht** in de GUI:
     worden genegeerd (bijv. `gezocht, gevraagd` om vraag-advertenties weg te filteren)  
   - **Moet bevatten** — minstens één van deze woorden moet in de titel staan
     (bijv. `startbewijs, ticket`)  
+  - **Categorie** — klik op 📂 bij het zoekwoord en kies uit de categorieën
+    die de marketplace voor die zoekterm kent (met aantallen). Een
+    hoofdcategorie filtert de marketplace zelf; een subcategorie past
+    MPWatcher lokaal toe.  
 - Per zoekwoord zie je wanneer er voor het laatst is gezocht, wanneer de
   volgende zoekactie komt, en of de laatste zoekactie een fout gaf  
 - Beschikbare acties:
   - Handmatig zoeken  
-  - Laatste resultaten bekijken (met foto en plaats)  
+  - Resultaten bekijken (met foto en plaats), doorzoekbaar op titel,
+    verkoper of plaats, en te bladeren door de volledige historie  
   - Resultaten resetten (met bevestiging; de volgende run is weer stil)  
   - Zoekwoord verwijderen (met bevestiging)  
 
@@ -201,11 +257,29 @@ Handig om nieuwe instellingen te testen.
 
 ```bash
 pip install -r requirements-dev.txt
+ruff check .
 pytest
 ```
 
+Wijzigingen per versie staan in [CHANGELOG.md](CHANGELOG.md); de sectie van
+een versie wordt bij een release als release-tekst gebruikt.
+
 Lokaal draaien zonder Docker kan met `python app.py`; zet eventueel
 `MPWATCHER_CONFIG_DIR` naar een lokale map (standaard `/config`).
+
+De code staat in het package `mpwatcher/`:
+
+| Module           | Inhoud                                                    |
+|------------------|-----------------------------------------------------------|
+| `config.py`      | constanten, paden, logger, default-instellingen           |
+| `utils.py`       | formattering en titelfilters                              |
+| `db.py`          | SQLite: migraties, instellingen, zoekwoorden, resultaten  |
+| `marketplace.py` | API-client en parsing van advertenties en categorieën     |
+| `notify.py`      | Telegram (met retry en samenvattingen)                    |
+| `scheduler.py`   | zoeklogica per zoekwoord en de achtergrondworker          |
+| `web.py`         | Flask-routes                                              |
+
+`app.py` in de hoofdmap is alleen het entrypoint voor gunicorn.
 
 De GitHub Actions-workflow draait eerst de tests (ook op pull requests) en
 bouwt pas daarna het image; een kapotte build kan zo nooit als `:latest`

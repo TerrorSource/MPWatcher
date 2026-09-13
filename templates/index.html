@@ -61,7 +61,7 @@
         </div>
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:10px;">
-          <span class="chip-muted">Interval en limiet worden overgenomen uit je configuratie.</span>
+          <span class="chip-muted">Een categoriefilter kies je daarna via 📂 bij het zoekwoord.</span>
           <button type="submit" class="btn btn-primary">+ Zoekwoord toevoegen</button>
         </div>
       </form>
@@ -103,6 +103,10 @@
           <span class="status-dot status-dot--{{ 'stale' if error_count else 'ok' }}"></span>
           Zoekacties: <strong>{% if error_count %}{{ error_count }} zoekwoord{{ "en" if error_count != 1 }} met een fout{% else %}geen fouten{% endif %}</strong>
         </li>
+        <li>
+          <span class="status-dot status-dot--{{ 'ok' if settings.repost_dedup_days else 'off' }}"></span>
+          Herplaatsingen: <strong>{% if settings.repost_dedup_days %}genegeerd binnen {{ settings.repost_dedup_days }} dagen{% else %}worden opnieuw gemeld{% endif %}</strong>
+        </li>
       </ul>
 
       <div class="divider"></div>
@@ -114,13 +118,48 @@
     </section>
   </div>
 
+  {% if recent %}
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-kicker">Recent gevonden</div>
+        <div class="card-title">Laatste nieuwe advertenties</div>
+        <p class="card-description">De {{ recent|length }} meest recent gevonden advertenties over alle zoekwoorden heen.</p>
+      </div>
+    </div>
+    <div class="recent-grid">
+      {% for ad in recent %}
+        <a class="recent-card" href="{{ ad.url }}" target="_blank" rel="noopener noreferrer">
+          {% if ad.image_url %}
+            <img src="{{ ad.image_url }}" alt="" loading="lazy">
+          {% else %}
+            <div class="recent-card__noimg">—</div>
+          {% endif %}
+          <div class="recent-card__body">
+            <div class="recent-card__title">{{ ad.title }}</div>
+            <div class="recent-card__meta">
+              <span class="badge-price">{{ ad.price or "—" }}</span>
+              {% if ad.reserved %}<span class="badge-pill">gereserveerd</span>{% endif %}
+              {% if ad.location %}<span>📍 {{ ad.location }}{% if ad.distance_km is not none %} · {{ ad.distance_km }} km{% endif %}</span>{% endif %}
+            </div>
+            <div class="recent-card__meta">
+              <span class="badge-pill">{{ ad.term or "?" }}</span>
+              <span>{{ ad.first_seen_display }}</span>
+            </div>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
   <section class="card">
     <div class="card-header">
       <div>
         <div class="card-kicker">Actieve zoekwoorden</div>
         <div class="card-title">Trefwoorden & intervallen</div>
         <p class="card-description">
-          Pas per zoekwoord het interval, min/max prijs, limiet en titelfilters aan. Wijzigingen worden direct opgeslagen.
+          Pas per zoekwoord het interval, min/max prijs, limiet, titelfilters en categorie aan. Wijzigingen worden direct opgeslagen.
         </p>
       </div>
     </div>
@@ -157,16 +196,23 @@
                 <label title="Advertenties met één van deze woorden in de titel worden genegeerd">
                   <span>zonder</span>
                   <input class="input" type="text" name="exclude_terms" form="kw-edit-{{ kw.id }}"
-                         value="{{ kw.exclude_terms }}" placeholder="gezocht, gevraagd"
+                         value="{{ kw.exclude_terms }}" placeholder="geen"
                          onchange="this.form.submit()">
                 </label>
                 <label title="Minstens één van deze woorden moet in de titel staan">
                   <span>met</span>
                   <input class="input" type="text" name="include_terms" form="kw-edit-{{ kw.id }}"
-                         value="{{ kw.include_terms }}" placeholder="optioneel"
+                         value="{{ kw.include_terms }}" placeholder="alles"
                          onchange="this.form.submit()">
                 </label>
               </div>
+
+              <span class="table-chip">
+                <a href="{{ url_for('keyword_categories', keyword_id=kw.id) }}" class="chip-link"
+                   title="Categoriefilter kiezen">
+                  📂 {{ kw.category_label if kw.category_label else "Alle categorieën" }} ▾
+                </a>
+              </span>
 
               <span class="table-chip" title="{{ kw.last_run_at }}">
                 Laatst gezocht:
@@ -179,7 +225,8 @@
               </span>
               {% if kw.last_error %}
                 <span class="table-chip" style="color:#fecaca;" title="{{ kw.last_error }}">
-                  ⚠ laatste zoekactie mislukt: {{ kw.last_error|truncate(70) }}
+                  ⚠ laatste zoekactie mislukt{% if kw.error_count > 1 %} ({{ kw.error_count }}× op rij, interval verlengd){% endif %}:
+                  {{ kw.last_error|truncate(70) }}
                 </span>
               {% endif %}
             </div>
