@@ -15,6 +15,8 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
 - Monitor meerdere zoekwoorden op **Marktplaats.nl** of **2dehands.be**  
 - Alleen **nieuwe advertenties** worden gemeld  
 - Optioneel een melding bij een **prijsverlaging** van een bekende advertentie  
+- **Titelfilters** per zoekwoord: uitsluitwoorden (bijv. *gezocht*) en verplichte woorden  
+- Veel nieuwe advertenties tegelijk? Dan één **samenvattend bericht** i.p.v. losse meldingen  
 - Telegram berichten bevatten:
   - Titel
   - Prijs
@@ -129,6 +131,13 @@ Vul de Telegram gegevens in onder **Configuratie → Telegram**:
 - Telegram Chat ID  
 - **Melding bij prijsverlaging** (aan/uit) — stuurt een 📉-melding wanneer
   een al bekende advertentie in prijs zakt  
+- **Samenvatting vanaf** — vindt één zoekactie minstens dit aantal nieuwe
+  advertenties, dan krijg je één overzichtsbericht in plaats van losse
+  meldingen (0 = altijd losse meldingen)  
+
+Meldingen bevatten titel, prijs, plaats van de verkoper, foto en een knop naar
+de advertentie. Bij een tijdelijke Telegram-limiet (te veel berichten) wacht
+MPWatcher automatisch en probeert het opnieuw.
 
 Gebruik de knop **“Test Telegram”** om te controleren of alles werkt.
 
@@ -150,16 +159,24 @@ Op de resultatenpagina van een zoekwoord staat per advertentie een
 
 Via het **Overzicht** in de GUI:
 
-- Voeg nieuwe zoekwoorden toe  
-- Stel per zoekwoord in:
-  - Min. prijs  
-  - Max. prijs  
+- Voeg nieuwe zoekwoorden toe — de eerste zoekactie draait direct en slaat
+  de bestaande advertenties **stil** op (geen Telegram-burst van oude ads)  
+- Stel per zoekwoord in (wijzigingen worden direct opgeslagen):
+  - Zoekterm  
+  - Interval  
+  - Min. / max. prijs  
   - Limiet per zoekopdracht  
+  - **Uitsluitwoorden** — advertenties met één van deze woorden in de titel
+    worden genegeerd (bijv. `gezocht, gevraagd` om vraag-advertenties weg te filteren)  
+  - **Moet bevatten** — minstens één van deze woorden moet in de titel staan
+    (bijv. `startbewijs, ticket`)  
+- Per zoekwoord zie je wanneer er voor het laatst is gezocht, wanneer de
+  volgende zoekactie komt, en of de laatste zoekactie een fout gaf  
 - Beschikbare acties:
   - Handmatig zoeken  
-  - Laatste resultaten bekijken  
-  - Resultaten resetten  
-  - Zoekwoord verwijderen  
+  - Laatste resultaten bekijken (met foto en plaats)  
+  - Resultaten resetten (met bevestiging; de volgende run is weer stil)  
+  - Zoekwoord verwijderen (met bevestiging)  
 
 ✅ Alleen **nieuwe advertenties** worden doorgestuurd  
 ✅ Duplicaten worden automatisch gefilterd  
@@ -189,3 +206,12 @@ pytest
 
 Lokaal draaien zonder Docker kan met `python app.py`; zet eventueel
 `MPWATCHER_CONFIG_DIR` naar een lokale map (standaard `/config`).
+
+De GitHub Actions-workflow draait eerst de tests (ook op pull requests) en
+bouwt pas daarna het image; een kapotte build kan zo nooit als `:latest`
+op je NAS belanden.
+
+**Dependabot**: de wekelijkse PR's zijn een signaleringslijst. De versiemap in
+de werkmap is de bron van waarheid en het publiceer-script overschrijft
+GitHub — merge Dependabot-PR's dus niet op GitHub, maar neem de bumps over in
+de volgende versie en sluit de PR's daarna.

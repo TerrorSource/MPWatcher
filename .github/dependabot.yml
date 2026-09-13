@@ -1,14 +1,20 @@
+# Dependabot-PR's zijn een signaleringslijst: de werkmap (MPWatcher vN) is de
+# bron van waarheid en commit-git.sh overschrijft GitHub. Voer bumps dus door
+# in de volgende versiemap en sluit de PR daarna; merge ze niet op GitHub.
 version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
   - package-ecosystem: docker
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 2

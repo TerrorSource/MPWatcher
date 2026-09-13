@@ -26,6 +26,7 @@
           <div class="card-title">Voeg een zoekwoord toe</div>
           <p class="card-description">
             Nieuwe zoekwoorden gebruiken automatisch je ingestelde standaardinterval, limiet en locatie.
+            De eerste zoekactie draait direct en slaat bestaande advertenties stil op (geen Telegram-burst).
           </p>
         </div>
         <span class="badge-pill">Realtime meldingen</span>
@@ -48,6 +49,17 @@
           </div>
         </div>
 
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="form-label">Uitsluitwoorden <span>komma-gescheiden</span></label>
+            <input class="input" type="text" name="exclude_terms" placeholder="bijv. gezocht, gevraagd">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Moet bevatten <span>één van, optioneel</span></label>
+            <input class="input" type="text" name="include_terms" placeholder="bijv. startbewijs, ticket">
+          </div>
+        </div>
+
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:10px;">
           <span class="chip-muted">Interval en limiet worden overgenomen uit je configuratie.</span>
           <button type="submit" class="btn btn-primary">+ Zoekwoord toevoegen</button>
@@ -61,20 +73,42 @@
           <div class="card-kicker">Status</div>
           <div class="card-title">Achtergrond worker & Telegram</div>
         </div>
-        <span class="badge-soft">Live</span>
+        {% if scheduler.state == "ok" %}
+          <span class="badge-soft">Actief</span>
+        {% elif scheduler.state == "stale" %}
+          <span class="badge-pill" style="border-color:rgba(248,113,113,0.6);color:#fecaca;">Hangt</span>
+        {% else %}
+          <span class="badge-pill">{{ scheduler.label }}</span>
+        {% endif %}
       </div>
 
-      <ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--text-muted);">
-        <li>• Iedere zoekterm wordt automatisch gezocht op basis van het ingestelde interval.</li>
-        <li>• Tijdens de slaapstand wordt maximaal <strong>1x per uur</strong> gezocht.</li>
-        <li>• Alleen <strong>nieuwe</strong> advertenties worden via Telegram gemeld.</li>
-        <li>• Handmatige zoekopdrachten kunnen, indien geactiveerd, ook direct naar Telegram sturen.</li>
+      <ul class="status-list">
+        <li>
+          <span class="status-dot status-dot--{{ scheduler.state }}"></span>
+          Scheduler: <strong>{{ scheduler.label }}</strong>
+        </li>
+        <li>
+          <span class="status-dot status-dot--{{ 'ok' if telegram_configured else 'off' }}"></span>
+          Telegram: <strong>{{ "geconfigureerd" if telegram_configured else "niet ingesteld" }}</strong>
+          {% if telegram_configured %}
+            · prijsverlaging {{ "aan" if settings.price_drop_alerts else "uit" }}
+            · samenvatting vanaf {{ settings.telegram_digest_threshold if settings.telegram_digest_threshold else "—" }}
+          {% endif %}
+        </li>
+        <li>
+          <span class="status-dot status-dot--{{ 'stale' if in_sleep else 'ok' }}"></span>
+          Slaapstand: <strong>{% if settings.sleep_mode %}{{ "nu actief (max 1×/uur)" if in_sleep else "aan (" ~ settings.sleep_start ~ "–" ~ settings.sleep_end ~ ")" }}{% else %}uit{% endif %}</strong>
+        </li>
+        <li>
+          <span class="status-dot status-dot--{{ 'stale' if error_count else 'ok' }}"></span>
+          Zoekacties: <strong>{% if error_count %}{{ error_count }} zoekwoord{{ "en" if error_count != 1 }} met een fout{% else %}geen fouten{% endif %}</strong>
+        </li>
       </ul>
 
       <div class="divider"></div>
 
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;">
-        <span class="chip-muted">Tip: stel per zoekwoord min/max prijs en limiet per run in.</span>
+        <span class="chip-muted">Alleen <strong>nieuwe</strong> advertenties en prijsverlagingen worden gemeld.</span>
         <a href="{{ url_for('config_view') }}" class="btn btn-soft">Configuratie openen</a>
       </div>
     </section>
@@ -86,7 +120,7 @@
         <div class="card-kicker">Actieve zoekwoorden</div>
         <div class="card-title">Trefwoorden & intervallen</div>
         <p class="card-description">
-          Pas per zoekwoord het interval, min/max prijs en limiet per zoekopdracht aan.
+          Pas per zoekwoord het interval, min/max prijs, limiet en titelfilters aan. Wijzigingen worden direct opgeslagen.
         </p>
       </div>
     </div>
@@ -118,6 +152,22 @@
                 <a href="{{ kw.mp_url }}" target="_blank" rel="noopener noreferrer"
                    class="btn btn-ghost" title="Open zoekopdracht op de marketplace">↗</a>
               </div>
+
+              <div class="filter-row">
+                <label title="Advertenties met één van deze woorden in de titel worden genegeerd">
+                  <span>zonder</span>
+                  <input class="input" type="text" name="exclude_terms" form="kw-edit-{{ kw.id }}"
+                         value="{{ kw.exclude_terms }}" placeholder="gezocht, gevraagd"
+                         onchange="this.form.submit()">
+                </label>
+                <label title="Minstens één van deze woorden moet in de titel staan">
+                  <span>met</span>
+                  <input class="input" type="text" name="include_terms" form="kw-edit-{{ kw.id }}"
+                         value="{{ kw.include_terms }}" placeholder="optioneel"
+                         onchange="this.form.submit()">
+                </label>
+              </div>
+
               <span class="table-chip" title="{{ kw.last_run_at }}">
                 Laatst gezocht:
                 {% if kw.last_run_at == "Nooit" %}
@@ -125,7 +175,13 @@
                 {% else %}
                   {{ kw.last_run_display }}
                 {% endif %}
+                · volgende: {{ kw.next_run_display }}
               </span>
+              {% if kw.last_error %}
+                <span class="table-chip" style="color:#fecaca;" title="{{ kw.last_error }}">
+                  ⚠ laatste zoekactie mislukt: {{ kw.last_error|truncate(70) }}
+                </span>
+              {% endif %}
             </div>
 
             <div class="inline-input-group">
@@ -164,11 +220,13 @@
 
               <a href="{{ url_for('results', keyword_id=kw.id) }}" class="btn btn-soft">Resultaten ({{ kw.result_count }})</a>
 
-              <form method="post" action="{{ url_for('reset_keyword', keyword_id=kw.id) }}">
+              <form method="post" action="{{ url_for('reset_keyword', keyword_id=kw.id) }}"
+                    onsubmit="return confirm({{ ("Alle " ~ kw.result_count ~ " opgeslagen resultaten van '" ~ kw.term ~ "' wissen? De volgende zoekactie slaat bestaande advertenties stil opnieuw op.")|tojson }})">
                 <button type="submit" class="btn btn-ghost">Reset</button>
               </form>
 
-              <form method="post" action="{{ url_for('delete_keyword', keyword_id=kw.id) }}">
+              <form method="post" action="{{ url_for('delete_keyword', keyword_id=kw.id) }}"
+                    onsubmit="return confirm({{ ("Zoekwoord '" ~ kw.term ~ "' en alle " ~ kw.result_count ~ " resultaten definitief verwijderen?")|tojson }})">
                 <button type="submit" class="btn btn-danger">Verwijderen</button>
               </form>
             </div>

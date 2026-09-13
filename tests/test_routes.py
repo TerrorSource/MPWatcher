@@ -25,6 +25,7 @@ def test_health_ok(client):
 
 def test_health_unhealthy_when_config_readonly(client, monkeypatch):
     monkeypatch.setattr(app, "_config_writable", lambda: False)
+    monkeypatch.setattr(app, "_config_check", None)  # cache leegmaken
     resp = client.get("/health")
     assert resp.status_code == 503
     assert resp.get_json()["status"] == "unhealthy"
@@ -49,7 +50,7 @@ def test_add_edit_delete_keyword(client):
     assert kw["term"] == "testfiets"
     assert kw["min_price"] == 50
     assert kw["max_price"] is None
-    assert kw["last_run_at"] == "Nooit"
+    assert kw["last_run_at"] != "Nooit"  # toevoegen draait direct een stille eerste run
 
     # Bewerken: interval en max_price zetten, min_price leegmaken
     resp = client.post(
@@ -80,7 +81,7 @@ def test_flash_message_visible_after_add(client):
     client.post("/keyword/add", data={"term": "flashtest"})
     resp = client.get("/")
     assert "flashtest" in resp.get_data(as_text=True)
-    assert "toegevoegd" in resp.get_data(as_text=True)
+    assert "toegevoegd" in resp.get_data(as_text=True)  # flash van add_keyword
     client.post(f"/keyword/{_first_keyword_id()}/delete")
 
 

@@ -9,11 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import requests
 from flask import (
     Flask,
+    abort,
     render_template,
     request,
     redirect,
@@ -42,6 +43,27 @@ APP_VERSION = os.environ.get("MPWATCHER_VERSION", "dev")
 def _inject_version():
     return {"app_version": APP_VERSION}
 
+
+# Eenvoudige CSRF-bescherming: een POST vanaf een andere site (Origin/Referer
+# met een andere host) wordt geweigerd. Requests zonder deze headers (curl,
+# scripts) blijven toegestaan.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+
+@app.before_request
+def _block_cross_site_posts():
+    if request.method != "POST":
+        return None
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if not source:
+        return None
+    source_host = urlparse(source).netloc
+    if source_host and source_host != request.host:
+        logger.warning("Cross-site POST geweigerd vanaf %s naar %s", source_host, request.path)
+        abort(403)
+    return None
+
+
 BASE_DIR = Path(__file__).resolve().parent
 # MPWATCHTER_CONFIG_DIR is de oude (typo) naam; fallback voor bestaande deployments
 CONFIG_DIR = Path(
@@ -67,6 +89,16 @@ SCHEDULER_STALE_SECONDS = 300
 # naar Marktplaats gespreid worden in plaats van in één burst.
 SEARCH_SPACING_SECONDS = 5
 
+# De schrijftest in /health wordt zo lang gecachet (scheelt schrijfacties op de NAS).
+CONFIG_CHECK_TTL_SECONDS = 300
+
+# Maximaal aantal regels in een Telegram-samenvatting (digest).
+DIGEST_MAX_ITEMS = 20
+
+
+class MarketplaceError(Exception):
+    """De zoekopdracht bij Marktplaats/2dehands is mislukt (netwerk, blokkade, API-wijziging)."""
+
 DEFAULT_SETTINGS = {
     "marketplace": "marktplaats",  # marktplaats | 2dehands
     "default_interval_minutes": 15,
@@ -83,6 +115,9 @@ DEFAULT_SETTINGS = {
     "telegram_chat_id": "",
     "manual_telegram": False,
     "price_drop_alerts": True,
+    # Vanaf dit aantal nieuwe advertenties in één run één samenvattend
+    # bericht i.p.v. losse meldingen (0 = altijd losse meldingen).
+    "telegram_digest_threshold": 5,
 
     # Blocklist
     "blocklist_enabled": False,
@@ -162,6 +197,13 @@ def init_db() -> None:
                     conn.execute(f"ALTER TABLE results ADD COLUMN {col} TEXT")
             if "price_cents" not in cols:
                 conn.execute("ALTER TABLE results ADD COLUMN price_cents INTEGER")
+            if "location" not in cols:
+                conn.execute("ALTER TABLE results ADD COLUMN location TEXT")
+
+            kw_cols = [row[1] for row in conn.execute("PRAGMA table_info(keywords)")]
+            for col in ("last_error", "exclude_terms", "include_terms"):
+                if col not in kw_cols:
+                    conn.execute(f"ALTER TABLE keywords ADD COLUMN {col} TEXT")
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_results_ad_id ON results(ad_id)"
@@ -331,6 +373,9 @@ def load_settings() -> dict:
     for key in ("sleep_mode", "manual_telegram", "blocklist_enabled", "price_drop_alerts"):
         merged[key] = bool(merged.get(key))
 
+    digest = _int_or_none(merged.get("telegram_digest_threshold"))
+    merged["telegram_digest_threshold"] = max(0, digest) if digest is not None else 5
+
     if not isinstance(merged.get("blocked_sellers"), list):
         merged["blocked_sellers"] = []
 
@@ -361,6 +406,7 @@ def save_settings(values: dict) -> None:
 # ------------------------------------------------------------------------------
 
 def _row_to_keyword(row: sqlite3.Row) -> dict:
+    keys = row.keys()
     return {
         "id": row["id"],
         "term": row["term"],
@@ -369,7 +415,39 @@ def _row_to_keyword(row: sqlite3.Row) -> dict:
         "max_price": row["max_price"],
         "limit_per_run": row["limit_per_run"],
         "last_run_at": row["last_run_at"] or "Nooit",
+        "last_error": (row["last_error"] if "last_error" in keys else None) or "",
+        "exclude_terms": (row["exclude_terms"] if "exclude_terms" in keys else None) or "",
+        "include_terms": (row["include_terms"] if "include_terms" in keys else None) or "",
     }
+
+
+def parse_terms(raw: str | None) -> list[str]:
+    """'Gezocht, gevraagd ,,' -> ['gezocht', 'gevraagd'] (voor titelfilters)."""
+    if not raw:
+        return []
+    seen: list[str] = []
+    for part in str(raw).split(","):
+        t = part.strip().lower()
+        if t and t not in seen:
+            seen.append(t)
+    return seen
+
+
+def normalize_terms(raw: str | None) -> str:
+    return ", ".join(parse_terms(raw))
+
+
+def title_passes_filters(title: str, include_terms: str | None, exclude_terms: str | None) -> bool:
+    """Uitsluitwoorden: één match in de titel is genoeg om de advertentie te
+    negeren. Verplichte woorden: minstens één ervan moet in de titel staan."""
+    t = (title or "").lower()
+    for word in parse_terms(exclude_terms):
+        if word in t:
+            return False
+    required = parse_terms(include_terms)
+    if required and not any(word in t for word in required):
+        return False
+    return True
 
 
 def load_keywords() -> list[dict]:
@@ -390,16 +468,24 @@ def get_keyword(keyword_id: int) -> Optional[dict]:
     return _row_to_keyword(row) if row else None
 
 
-def add_keyword_row(term: str, interval_minutes, min_price, max_price, limit_per_run) -> int:
+def add_keyword_row(
+    term: str, interval_minutes, min_price, max_price, limit_per_run,
+    exclude_terms: str = "", include_terms: str = "",
+) -> int:
     conn = _connect()
     try:
         with conn:
             cur = conn.execute(
                 """
-                INSERT INTO keywords (term, interval_minutes, min_price, max_price, limit_per_run, last_run_at)
-                VALUES (?, ?, ?, ?, ?, NULL)
+                INSERT INTO keywords
+                    (term, interval_minutes, min_price, max_price, limit_per_run,
+                     last_run_at, exclude_terms, include_terms)
+                VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
                 """,
-                (term, interval_minutes, min_price, max_price, limit_per_run),
+                (
+                    term, interval_minutes, min_price, max_price, limit_per_run,
+                    normalize_terms(exclude_terms), normalize_terms(include_terms),
+                ),
             )
             return cur.lastrowid
     finally:
@@ -446,6 +532,59 @@ def is_in_sleep_window(now_t: time, start: time, end: time) -> bool:
     if start < end:
         return start <= now_t < end
     return now_t >= start or now_t < end
+
+
+def effective_interval(kw: dict, settings: dict, now: datetime) -> timedelta:
+    """Interval van een zoekwoord, rekening houdend met de slaapstand."""
+    interval_minutes = int(kw.get("interval_minutes") or settings["default_interval_minutes"])
+    interval = timedelta(minutes=interval_minutes)
+    if settings.get("sleep_mode"):
+        in_sleep = is_in_sleep_window(
+            now.time(),
+            parse_time_str(settings.get("sleep_start", "23:00")),
+            parse_time_str(settings.get("sleep_end", "07:00")),
+        )
+        if in_sleep and interval < timedelta(hours=1):
+            return timedelta(hours=1)
+    return interval
+
+
+def compute_next_run(kw: dict, settings: dict, now: datetime) -> Optional[datetime]:
+    """Verwachte volgende zoekactie; None als het zoekwoord nog nooit liep."""
+    last = kw.get("last_run_at")
+    if not last or last == "Nooit":
+        return None
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except Exception:
+        return None
+    return last_dt + effective_interval(kw, settings, now)
+
+
+def format_next_run(next_dt: Optional[datetime], now: datetime) -> str:
+    if next_dt is None:
+        return "wacht op eerste run"
+    secs = int((next_dt - now).total_seconds())
+    if secs <= 0:
+        return "nu"
+    mins = secs // 60
+    if mins < 1:
+        return "< 1 min"
+    if mins < 60:
+        return f"over {mins} min"
+    return f"over {mins // 60} uur {mins % 60} min"
+
+
+def get_scheduler_status() -> dict:
+    """Echte status van de achtergrondworker voor de statuskaart in de UI."""
+    if not _worker_thread_started:
+        return {"state": "off", "label": "niet gestart", "age_seconds": None}
+    if _last_heartbeat is None:
+        return {"state": "starting", "label": "start op…", "age_seconds": None}
+    age = int(time_module.monotonic() - _last_heartbeat)
+    if age > SCHEDULER_STALE_SECONDS:
+        return {"state": "stale", "label": f"geen teken van leven sinds {age // 60} min", "age_seconds": age}
+    return {"state": "ok", "label": f"actief (laatste hartslag {age} s geleden)", "age_seconds": age}
 
 
 # ------------------------------------------------------------------------------
@@ -525,6 +664,23 @@ def _extract_posted_at(item: dict) -> str:
                     s = _format_epoch_to_str(sv)
                     if s:
                         return s
+    return ""
+
+
+def _extract_location(item: dict) -> str:
+    """Woonplaats van de verkoper uit het API-item (best effort)."""
+    loc = item.get("location")
+    if isinstance(loc, str) and loc.strip():
+        return loc.strip()
+    if isinstance(loc, dict):
+        for key in ("cityName", "city", "name", "locationName", "abbreviatedCity"):
+            v = loc.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    for key in ("locationName", "cityName", "city"):
+        v = item.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
     return ""
 
 
@@ -783,6 +939,10 @@ def fetch_market_results(term: str, settings: dict, limit: int) -> list[dict]:
 
     try:
         resp = HTTP.get(api_url, params=params, timeout=15)
+        if resp.status_code in (403, 429):
+            raise MarketplaceError(
+                f"{domain} weigert de zoekopdracht (HTTP {resp.status_code}); mogelijk geblokkeerd"
+            )
         resp.raise_for_status()
         data = resp.json()
 
@@ -849,12 +1009,14 @@ def fetch_market_results(term: str, settings: dict, limit: int) -> list[dict]:
                         "image_url": image_url,
                         "posted_at": posted_at,
                         "seller": seller,
+                        "location": _extract_location(item),
                     }
                 )
 
+    except MarketplaceError:
+        raise
     except Exception as exc:
-        logger.warning("Zoekopdracht voor '%s' mislukt: %s", term, exc)
-        return []
+        raise MarketplaceError(f"zoekopdracht bij {domain} mislukt: {exc}") from exc
 
     return results[:limit]
 
@@ -893,16 +1055,15 @@ def find_price_drops(keyword_id: int, ads: list[dict]) -> list[tuple[dict, int, 
     if not ads:
         return []
 
+    ad_ids = [ad["ad_id"] for ad in ads]
+    placeholders = ",".join("?" for _ in ad_ids)
     conn = _connect()
     try:
-        stored: dict[str, Optional[int]] = {}
-        for ad in ads:
-            row = conn.execute(
-                "SELECT price_cents FROM results WHERE keyword_id = ? AND ad_id = ?",
-                (keyword_id, ad["ad_id"]),
-            ).fetchone()
-            if row:
-                stored[ad["ad_id"]] = row["price_cents"]
+        rows = conn.execute(
+            f"SELECT ad_id, price_cents FROM results WHERE keyword_id = ? AND ad_id IN ({placeholders})",
+            (keyword_id, *ad_ids),
+        ).fetchall()
+        stored: dict[str, Optional[int]] = {row["ad_id"]: row["price_cents"] for row in rows}
     finally:
         conn.close()
 
@@ -942,13 +1103,14 @@ def insert_new_ads(keyword_id: int, ads: list[dict]) -> list[dict]:
                         """
                         INSERT INTO results
                             (keyword_id, ad_id, title, price, price_cents, url, image_url, seller,
-                             first_seen_at, posted_at, posted_ts)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             location, first_seen_at, posted_at, posted_ts)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             keyword_id, ad["ad_id"], ad.get("title", ""), ad.get("price", ""),
                             ad.get("price_cents"),
                             ad.get("url", ""), ad.get("image_url", ""), ad.get("seller", ""),
+                            ad.get("location", ""),
                             now_iso, ad.get("posted_at", ""), posted_ts,
                         ),
                     )
@@ -1001,6 +1163,10 @@ def update_known_ads(keyword_id: int, ads: list[dict]) -> None:
                         seller = CASE
                             WHEN (seller IS NULL OR seller = '') AND ? != '' THEN ?
                             ELSE seller
+                        END,
+                        location = CASE
+                            WHEN (location IS NULL OR location = '') AND ? != '' THEN ?
+                            ELSE location
                         END
                     WHERE keyword_id = ? AND ad_id = ?
                     """,
@@ -1011,6 +1177,7 @@ def update_known_ads(keyword_id: int, ads: list[dict]) -> None:
                         posted_at, posted_at,
                         posted_ts, posted_ts,
                         ad.get("seller", ""), ad.get("seller", ""),
+                        ad.get("location", ""), ad.get("location", ""),
                         keyword_id, ad["ad_id"],
                     ),
                 )
@@ -1023,7 +1190,7 @@ def get_results_for_keyword(keyword_id: int, limit: int = 200) -> list[dict]:
     try:
         rows = conn.execute(
             """
-            SELECT title, price, url, image_url, seller, first_seen_at, posted_at
+            SELECT title, price, url, image_url, seller, location, first_seen_at, posted_at
             FROM results
             WHERE keyword_id = ?
             ORDER BY COALESCE(posted_ts, first_seen_at) DESC
@@ -1077,73 +1244,116 @@ def prune_results_for_keyword(keyword_id: int) -> None:
 # Telegram
 # ------------------------------------------------------------------------------
 
-def send_telegram_message(text: str, settings: dict) -> None:
+TELEGRAM_MAX_ATTEMPTS = 3
+TELEGRAM_MAX_RETRY_AFTER = 30  # seconden; langer wachten blokkeert de scheduler te veel
+
+
+def _telegram_post(method: str, payload: dict, settings: dict, label: str) -> bool:
+    """POST naar de Bot API met retry bij rate-limiting (HTTP 429 + retry_after).
+    Geeft True terug als Telegram het bericht geaccepteerd heeft."""
     bot_id = (settings.get("telegram_bot_id") or "").strip()
     chat_id = (settings.get("telegram_chat_id") or "").strip()
     if not bot_id or not chat_id:
-        return
+        return False
 
+    api_url = f"https://api.telegram.org/bot{bot_id}/{method}"
+    payload = {"chat_id": chat_id, **payload}
+
+    for attempt in range(1, TELEGRAM_MAX_ATTEMPTS + 1):
+        try:
+            resp = HTTP.post(api_url, json=payload, timeout=10)
+        except Exception as exc:
+            logger.warning("Telegram %s voor '%s' mislukt: %s", method, label, exc)
+            return False
+
+        if resp.ok:
+            return True
+
+        if resp.status_code == 429 and attempt < TELEGRAM_MAX_ATTEMPTS:
+            try:
+                retry_after = int(resp.json().get("parameters", {}).get("retry_after", 3))
+            except Exception:
+                retry_after = 3
+            retry_after = max(1, min(TELEGRAM_MAX_RETRY_AFTER, retry_after))
+            logger.warning(
+                "Telegram rate-limit voor '%s'; opnieuw over %s s (poging %s/%s)",
+                label, retry_after, attempt, TELEGRAM_MAX_ATTEMPTS,
+            )
+            time_module.sleep(retry_after)
+            continue
+
+        logger.warning(
+            "Telegram %s voor '%s' mislukt (%s): %s",
+            method, label, resp.status_code, resp.text,
+        )
+        return False
+    return False
+
+
+def send_telegram_message(text: str, settings: dict) -> None:
     # Geen parse_mode: advertentietitels met _ * [ ] braken Markdown-parsing
     # waardoor Telegram het bericht stilletjes weigerde.
-    url = f"https://api.telegram.org/bot{bot_id}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "disable_web_page_preview": False,
-    }
-    try:
-        resp = HTTP.post(url, json=payload, timeout=10)
-        if not resp.ok:
-            logger.warning("Telegram sendMessage mislukt (%s): %s", resp.status_code, resp.text)
-    except Exception as exc:
-        logger.warning("Telegram sendMessage mislukt: %s", exc)
+    _telegram_post(
+        "sendMessage",
+        {"text": text, "disable_web_page_preview": False},
+        settings,
+        label=text[:40],
+    )
 
 
 def _send_ad_via_telegram(caption: str, ad: dict, settings: dict) -> None:
-    bot_id = (settings.get("telegram_bot_id") or "").strip()
-    chat_id = (settings.get("telegram_chat_id") or "").strip()
-    if not bot_id or not chat_id:
-        return
-
     title = (ad.get("title") or "").strip()
     url = (ad.get("url") or "").strip()
     image_url = (ad.get("image_url") or "").strip()
-
     reply_markup = {"inline_keyboard": [[{"text": "Bekijk advertentie", "url": url}]]}
 
-    try:
-        if image_url:
-            api_url = f"https://api.telegram.org/bot{bot_id}/sendPhoto"
-            payload = {
-                "chat_id": chat_id,
-                "photo": image_url,
-                "caption": caption,
-                "reply_markup": reply_markup,
-            }
-        else:
-            api_url = f"https://api.telegram.org/bot{bot_id}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": caption,
-                "reply_markup": reply_markup,
-            }
-        resp = HTTP.post(api_url, json=payload, timeout=10)
-        if not resp.ok:
-            logger.warning(
-                "Telegram-melding voor '%s' mislukt (%s): %s",
-                title, resp.status_code, resp.text,
-            )
-    except Exception as exc:
-        logger.warning("Telegram-melding voor '%s' mislukt: %s", title, exc)
+    if image_url:
+        _telegram_post(
+            "sendPhoto",
+            {"photo": image_url, "caption": caption, "reply_markup": reply_markup},
+            settings, label=title,
+        )
+    else:
+        _telegram_post(
+            "sendMessage",
+            {"text": caption, "reply_markup": reply_markup},
+            settings, label=title,
+        )
+
+
+def _ad_caption(ad: dict) -> str:
+    title = (ad.get("title") or "").strip()
+    price = (ad.get("price") or "").strip()
+    location = (ad.get("location") or "").strip()
+    posted_at = (ad.get("posted_at") or "").strip()
+    caption = f"Titel = {title}\nPrijs = {price}"
+    if location:
+        caption += f"\nPlaats = {location}"
+    if posted_at:
+        caption += f"\nDatum = {posted_at}"
+    return caption
 
 
 def send_telegram_ad(ad: dict, settings: dict) -> None:
-    title = (ad.get("title") or "").strip()
-    price = (ad.get("price") or "").strip()
-    posted_at = (ad.get("posted_at") or "").strip()
+    _send_ad_via_telegram(_ad_caption(ad), ad, settings)
 
-    caption = f"Titel = {title}\nPrijs = {price}" + (f"\nDatum = {posted_at}" if posted_at else "")
-    _send_ad_via_telegram(caption, ad, settings)
+
+def send_telegram_digest(term: str, ads: list[dict], settings: dict) -> None:
+    """Eén samenvattend bericht voor veel nieuwe advertenties tegelijk."""
+    lines = [f"🔎 {term}: {len(ads)} nieuwe advertenties"]
+    for i, ad in enumerate(ads[:DIGEST_MAX_ITEMS], start=1):
+        title = (ad.get("title") or "").strip()
+        price = (ad.get("price") or "").strip() or "—"
+        location = (ad.get("location") or "").strip()
+        meta = f"{price}" + (f" · {location}" if location else "")
+        lines.append(f"\n{i}. {title}\n   {meta}\n   {ad.get('url', '')}")
+    if len(ads) > DIGEST_MAX_ITEMS:
+        lines.append(f"\n… en nog {len(ads) - DIGEST_MAX_ITEMS} meer")
+    _telegram_post(
+        "sendMessage",
+        {"text": "\n".join(lines), "disable_web_page_preview": True},
+        settings, label=f"digest {term}",
+    )
 
 
 def send_telegram_price_drop(ad: dict, old_cents: int, new_cents: int, settings: dict) -> None:
@@ -1160,22 +1370,34 @@ def send_telegram_price_drop(ad: dict, old_cents: int, new_cents: int, settings:
 # ------------------------------------------------------------------------------
 
 def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) -> tuple[int, int]:
+    """Eén zoekactie. Geeft (aantal resultaten na filters, aantal nieuw) terug.
+    Gooit MarketplaceError als de zoekopdracht zelf mislukt.
+
+    De allereerste run van een zoekwoord (last_run_at leeg, ook na Reset) is
+    'stil': resultaten worden opgeslagen maar niet via Telegram gemeld, anders
+    krijg je een burst van oude advertenties."""
     term = keyword["term"]
     limit_per_run = int(keyword.get("limit_per_run") or settings["default_limit_per_run"])
     limit_per_run = max(1, min(20, limit_per_run))
     min_price = _int_or_none(keyword.get("min_price"))
     max_price = _int_or_none(keyword.get("max_price"))
+    first_run = keyword.get("last_run_at") in (None, "", "Nooit")
 
     raw_ads = fetch_market_results(term, settings, limit_per_run)
 
     # Prijsfilter op centen uit de API; advertenties zonder bruikbare prijs
     # ("Bieden", "Gratis") vallen weg zodra een grens is ingesteld.
+    # Daarna de titelfilters (uitsluitwoorden / verplichte woorden).
     ads: list[dict] = []
     for ad in raw_ads:
         cents = ad.get("price_cents")
         if min_price is not None and (cents is None or cents < min_price * 100):
             continue
         if max_price is not None and (cents is None or cents > max_price * 100):
+            continue
+        if not title_passes_filters(
+            ad.get("title", ""), keyword.get("include_terms"), keyword.get("exclude_terms")
+        ):
             continue
         ads.append(ad)
 
@@ -1206,6 +1428,14 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
     new_ads = insert_new_ads(keyword["id"], new_candidates)
     prune_results_for_keyword(keyword["id"])
 
+    if first_run:
+        if new_ads:
+            logger.info(
+                "Eerste run van '%s': %s advertenties stil opgeslagen (geen Telegram)",
+                term, len(new_ads),
+            )
+        return len(ads), len(new_ads)
+
     notify = (not manual) or settings.get("manual_telegram")
     if notify:
         for ad, old_c, new_c in price_drops:
@@ -1215,6 +1445,7 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
             )
             send_telegram_price_drop(ad, old_c, new_c, settings)
 
+        to_notify: list[dict] = []
         for ad in new_ads:
             if ad.get("_seen_elsewhere"):
                 logger.info(
@@ -1222,7 +1453,15 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
                     ad.get("title"),
                 )
                 continue
-            send_telegram_ad(ad, settings)
+            to_notify.append(ad)
+
+        digest_threshold = int(settings.get("telegram_digest_threshold") or 0)
+        if digest_threshold and len(to_notify) >= digest_threshold:
+            logger.info("%s nieuwe advertenties voor '%s' als samenvatting gemeld", len(to_notify), term)
+            send_telegram_digest(term, to_notify, settings)
+        else:
+            for ad in to_notify:
+                send_telegram_ad(ad, settings)
 
     return len(ads), len(new_ads)
 
@@ -1247,46 +1486,37 @@ def scheduler_loop():
                 time_module.sleep(30)
                 continue
 
-            sleep_mode = bool(settings.get("sleep_mode"))
-            sleep_start = parse_time_str(settings.get("sleep_start", "23:00"))
-            sleep_end = parse_time_str(settings.get("sleep_end", "07:00"))
-
             now = datetime.now()
-            now_t = now.time()
-            in_sleep = sleep_mode and is_in_sleep_window(now_t, sleep_start, sleep_end)
 
             for kw in keywords:
                 _last_heartbeat = time_module.monotonic()
                 if not kw.get("term"):
                     continue
 
-                interval_minutes = int(kw.get("interval_minutes") or settings["default_interval_minutes"])
-                interval = timedelta(minutes=interval_minutes)
-                eff_interval = timedelta(hours=1) if (in_sleep and interval < timedelta(hours=1)) else interval
+                next_run = compute_next_run(kw, settings, now)
+                if next_run is not None and next_run > now:
+                    continue
 
-                last_run_at_str = kw.get("last_run_at") or "Nooit"
-                last_dt = None
-                if last_run_at_str != "Nooit":
-                    try:
-                        last_dt = datetime.fromisoformat(last_run_at_str)
-                    except Exception:
-                        last_dt = None
-
-                if (last_dt is None) or (now - last_dt >= eff_interval):
-                    try:
-                        total, new_count = run_search_for_keyword(kw, settings, manual=False)
-                        logger.info(
-                            "Zoekactie '%s': %s resultaten, %s nieuw",
-                            kw["term"], total, new_count,
-                        )
-                        update_keyword_fields(
-                            kw["id"],
-                            last_run_at=datetime.now().isoformat(timespec="seconds"),
-                        )
-                    except Exception:
-                        logger.exception("Zoekactie voor '%s' mislukt", kw.get("term"))
-                        continue
-                    time_module.sleep(SEARCH_SPACING_SECONDS)
+                try:
+                    total, new_count = run_search_for_keyword(kw, settings, manual=False)
+                    # Alleen op INFO loggen als er iets gebeurd is; anders DEBUG
+                    # (scheelt honderden log-regels per dag).
+                    log = logger.info if new_count else logger.debug
+                    log("Zoekactie '%s': %s resultaten, %s nieuw", kw["term"], total, new_count)
+                    update_keyword_fields(
+                        kw["id"],
+                        last_run_at=datetime.now().isoformat(timespec="seconds"),
+                        last_error=None,
+                    )
+                except MarketplaceError as exc:
+                    logger.warning("Zoekactie '%s' mislukt: %s", kw["term"], exc)
+                    update_keyword_fields(kw["id"], last_error=str(exc)[:200])
+                    continue
+                except Exception as exc:
+                    logger.exception("Zoekactie voor '%s' mislukt", kw.get("term"))
+                    update_keyword_fields(kw["id"], last_error=f"{type(exc).__name__}: {exc}"[:200])
+                    continue
+                time_module.sleep(SEARCH_SPACING_SECONDS)
 
             time_module.sleep(60)
         except Exception:
@@ -1316,11 +1546,19 @@ def index():
     settings = load_settings()
     keywords = load_keywords()
     counts = get_result_counts()
+    now = datetime.now()
 
     for kw in keywords:
         kw["mp_url"] = build_search_url(kw["term"], settings)
         kw["result_count"] = counts.get(kw["id"], 0)
         kw["last_run_display"] = format_relative_time(kw["last_run_at"])
+        kw["next_run_display"] = format_next_run(compute_next_run(kw, settings, now), now)
+
+    in_sleep = bool(settings.get("sleep_mode")) and is_in_sleep_window(
+        now.time(),
+        parse_time_str(settings.get("sleep_start", "23:00")),
+        parse_time_str(settings.get("sleep_end", "07:00")),
+    )
 
     return render_template(
         "index.html",
@@ -1328,6 +1566,13 @@ def index():
         default_interval=settings["default_interval_minutes"],
         default_limit_per_run=settings["default_limit_per_run"],
         settings=settings,
+        scheduler=get_scheduler_status(),
+        telegram_configured=bool(
+            (settings.get("telegram_bot_id") or "").strip()
+            and (settings.get("telegram_chat_id") or "").strip()
+        ),
+        in_sleep=in_sleep,
+        error_count=sum(1 for kw in keywords if kw.get("last_error")),
     )
 
 
@@ -1340,14 +1585,26 @@ def add_keyword():
         flash("Zoekwoord mag niet leeg zijn.", "error")
         return redirect(url_for("index"))
 
-    add_keyword_row(
+    kid = add_keyword_row(
         term=term,
         interval_minutes=settings["default_interval_minutes"],
         min_price=_int_or_none(request.form.get("min_price")),
         max_price=_int_or_none(request.form.get("max_price")),
         limit_per_run=settings["default_limit_per_run"],
+        exclude_terms=request.form.get("exclude_terms", ""),
+        include_terms=request.form.get("include_terms", ""),
     )
-    flash(f"Zoekwoord '{term}' toegevoegd.", "success")
+
+    # Direct een eerste (stille) zoekactie zodat de resultatenpagina meteen
+    # gevuld is — zonder Telegram-burst van bestaande advertenties.
+    kw = get_keyword(kid)
+    try:
+        total, _ = run_search_for_keyword(kw, settings, manual=True)
+        update_keyword_fields(kid, last_run_at=datetime.now().isoformat(timespec="seconds"), last_error=None)
+        flash(f"Zoekwoord '{term}' toegevoegd; {total} bestaande advertenties stil opgeslagen.", "success")
+    except MarketplaceError as exc:
+        update_keyword_fields(kid, last_error=str(exc)[:200])
+        flash(f"Zoekwoord '{term}' toegevoegd, maar de eerste zoekactie mislukte: {exc}", "error")
     return redirect(url_for("index"))
 
 
@@ -1378,6 +1635,11 @@ def edit_keyword(keyword_id: int):
         except ValueError:
             pass
 
+    if "exclude_terms" in request.form:
+        fields["exclude_terms"] = normalize_terms(request.form.get("exclude_terms"))
+    if "include_terms" in request.form:
+        fields["include_terms"] = normalize_terms(request.form.get("include_terms"))
+
     if not update_keyword_fields(keyword_id, **fields):
         flash("Zoekwoord niet gevonden.", "error")
 
@@ -1392,9 +1654,18 @@ def manual_search(keyword_id: int):
         flash("Zoekwoord niet gevonden.", "error")
         return redirect(url_for("index"))
 
-    total, new_count = run_search_for_keyword(kw, settings, manual=True)
-    update_keyword_fields(keyword_id, last_run_at=datetime.now().isoformat(timespec="seconds"))
+    try:
+        total, new_count = run_search_for_keyword(kw, settings, manual=True)
+    except MarketplaceError as exc:
+        update_keyword_fields(keyword_id, last_error=str(exc)[:200])
+        flash(f"Zoekactie voor '{kw['term']}' mislukt: {exc}", "error")
+        return redirect(url_for("index"))
 
+    update_keyword_fields(
+        keyword_id,
+        last_run_at=datetime.now().isoformat(timespec="seconds"),
+        last_error=None,
+    )
     flash(
         f"Handmatige zoekactie voor '{kw['term']}' uitgevoerd ({total} resultaten, {new_count} nieuw).",
         "success",
@@ -1532,11 +1803,13 @@ def config_save_timer():
 
 @app.route("/config/telegram", methods=["POST"])
 def config_save_telegram():
+    digest = _int_or_none(request.form.get("telegram_digest_threshold"))
     save_settings({
         "telegram_bot_id": (request.form.get("telegram_bot_id") or "").strip(),
         "telegram_chat_id": (request.form.get("telegram_chat_id") or "").strip(),
         "manual_telegram": _form_bool(request.form.get("manual_telegram")),
         "price_drop_alerts": _form_bool(request.form.get("price_drop_alerts")),
+        "telegram_digest_threshold": max(0, digest) if digest is not None else 5,
     })
     flash("Telegram-instellingen opgeslagen.", "success")
     return redirect(url_for("config_view"))
@@ -1566,9 +1839,23 @@ def _config_writable() -> bool:
         return False
 
 
+_config_check: Optional[tuple[float, bool]] = None  # (monotonic-tijd, resultaat)
+
+
+def _config_writable_cached() -> bool:
+    """De schrijftest hoeft niet elke 30 s (Docker-healthcheck); cache het resultaat."""
+    global _config_check
+    now = time_module.monotonic()
+    if _config_check is not None and now - _config_check[0] < CONFIG_CHECK_TTL_SECONDS:
+        return _config_check[1]
+    ok = _config_writable()
+    _config_check = (now, ok)
+    return ok
+
+
 @app.route("/health")
 def health():
-    if not _config_writable():
+    if not _config_writable_cached():
         return {
             "status": "unhealthy",
             "reason": "config-dir niet schrijfbaar",

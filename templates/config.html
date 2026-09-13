@@ -126,6 +126,12 @@
           </select>
         </div>
 
+        <div class="form-field">
+          <label class="form-label">Samenvatting vanaf <span>aantal nieuwe advertenties per zoekactie; 0 = altijd losse meldingen</span></label>
+          <input class="input" type="number" min="0" max="50" name="telegram_digest_threshold"
+                 value="{{ settings.telegram_digest_threshold }}">
+        </div>
+
         <div class="btn-group">
           <button class="btn btn-primary" type="submit">Opslaan</button>
         </div>

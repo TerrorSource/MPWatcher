@@ -18,7 +18,7 @@
   {% if ads %}
     <div class="table-wrapper">
       <!-- Header -->
-      <div class="table-header" style="grid-template-columns: 70px 110px 1fr 140px 130px 75px 120px;">
+      <div class="table-header table-header--results">
         <div>Foto</div>
         <div>Datum</div>
         <div>Titel</div>
@@ -29,7 +29,7 @@
       </div>
 
       {% for ad in ads %}
-        <div class="table-row" style="grid-template-columns: 70px 110px 1fr 140px 130px 75px 120px;">
+        <div class="table-row table-row--results">
           <!-- Foto -->
           <div>
             {% if ad.image_url %}
@@ -60,9 +60,14 @@
             {{ ad.price if ad.price else "—" }}
           </div>
 
-          <!-- Verkoper -->
-          <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-            {{ ad.seller if ad.seller else "—" }}
+          <!-- Verkoper + plaats -->
+          <div style="min-width:0; overflow:hidden;">
+            <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+              {{ ad.seller if ad.seller else "—" }}
+            </div>
+            {% if ad.location %}
+              <div class="table-chip" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">📍 {{ ad.location }}</div>
+            {% endif %}
           </div>
 
           <!-- Blokkeer -->
