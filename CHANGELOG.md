@@ -3,6 +3,10 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v24
+
+- Fix: de Trivy-scan in CI verwees naar een niet-bestaande versie-tag (`0.28.0`); nu `v0.36.0`. Geen functionele wijzigingen.
+
 ## v23
 
 - **Verlopen advertenties**: advertenties van de afgelopen 7 dagen (instelbaar) worden dagelijks gecontroleerd; verwijderde exemplaren (HTTP 410) krijgen het label *verlopen* in resultaten en overzicht.
