@@ -11,10 +11,17 @@
       <p class="card-description">
         Gesorteerd op nieuw → oud.
         {% if keyword.category_label %}Categorie: <strong>{{ keyword.category_label }}</strong>.{% endif %}
-        Blocklist verkopers is <strong>{{ "Aan" if settings.blocklist_enabled else "Uit" }}</strong>.
+        {% set blocked_n = settings.blocked_sellers|length %}
+        {% if blocked_n %}<strong>{{ blocked_n }}</strong> verkoper{{ "s" if blocked_n != 1 }} geblokkeerd.{% endif %}
       </p>
     </div>
-    <a class="btn btn-soft" href="{{ url_for('index') }}">← Terug</a>
+    <div class="btn-group">
+      <form method="post" action="{{ url_for('manual_search', keyword_id=keyword.id) }}">
+        <input type="hidden" name="next" value="results">
+        <button type="submit" class="btn btn-primary">Nu zoeken</button>
+      </form>
+      <a class="btn btn-soft" href="{{ url_for('index') }}">← Terug</a>
+    </div>
   </div>
 
   <form method="get" action="{{ url_for('results', keyword_id=keyword.id) }}"
@@ -68,24 +75,34 @@
             {{ ad.posted_at if ad.posted_at else "—" }}
           </div>
 
-          <!-- Titel -->
-          <div class="table-cell-title" style="min-width:0;">
+          <!-- Titel + kenmerken; omschrijving als tooltip -->
+          <div class="table-cell-title" style="min-width:0;{% if ad.expired %}opacity:0.55;{% endif %}">
             <a href="{{ ad.url }}" target="_blank" rel="noopener noreferrer"
+               {% if ad.description %}title="{{ ad.description }}"{% endif %}
                style="color: var(--mp-orange-soft); text-decoration: none; font-weight: 600; display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
               {{ ad.title }}
             </a>
+            {% if ad.attributes %}
+              <span class="table-chip" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ ad.attributes }}</span>
+            {% endif %}
           </div>
 
           <!-- Prijs -->
           <div style="white-space:nowrap;">
             {{ ad.price if ad.price else "—" }}
-            {% if ad.reserved %}<div class="table-chip" style="color:#fecaca;">gereserveerd</div>{% endif %}
+            {% if ad.expired %}<div class="table-chip" style="color:#fecaca;" title="Advertentie is verwijderd op {{ ad.expired_at }}">verlopen</div>
+            {% elif ad.reserved %}<div class="table-chip" style="color:#fecaca;">gereserveerd</div>{% endif %}
           </div>
 
-          <!-- Verkoper + plaats -->
+          <!-- Verkoper (link naar profiel) + plaats -->
           <div style="min-width:0; overflow:hidden;">
             <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-              {{ ad.seller if ad.seller else "—" }}
+              {% if ad.seller and ad.seller_url %}
+                <a href="{{ ad.seller_url }}" target="_blank" rel="noopener noreferrer"
+                   style="color:inherit;text-decoration:underline dotted;" title="Profiel van {{ ad.seller }} (andere advertenties, beoordelingen)">{{ ad.seller }}</a>
+              {% else %}
+                {{ ad.seller if ad.seller else "—" }}
+              {% endif %}
             </div>
             {% if ad.location %}
               <div class="table-chip" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">

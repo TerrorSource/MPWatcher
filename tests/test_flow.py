@@ -286,3 +286,103 @@ def test_skip_reserved_and_distance_in_caption(monkeypatch, telegram_log, keywor
     telegram_log.clear()
     assert scheduler.run_search_for_keyword(keyword, _settings(skip_reserved=False)) == (2, 2)
     assert any("Gereserveerd" in p["text"] for _, p in telegram_log)
+
+
+# --- v23: verlopen advertenties, Telegram-retry, parsing ---------------------
+
+def test_expiry_check_marks_removed_ads(monkeypatch, keyword):
+    conn = db.connect()
+    with conn:
+        conn.execute("DELETE FROM results")  # gedeelde test-DB: alleen onze eigen rijen controleren
+    conn.close()
+    db.insert_new_ads(keyword["id"], [_ad("e1", "Nog te koop", 1000), _ad("e2", "Verwijderd", 1000), _ad("e3", "Onbekend", 1000)])
+    monkeypatch.setattr(scheduler.time_module, "sleep", lambda s: None)
+    verdicts = {"https://example.com/e1": True, "https://example.com/e2": False, "https://example.com/e3": None}
+    monkeypatch.setattr(marketplace, "check_ad_alive", lambda url: verdicts.get(url))
+
+    checked, expired = scheduler.run_expiry_check(_settings(expiry_check_days=7))
+    assert (checked, expired) == (2, 1)
+    rows = {r["title"]: r for r in db.get_results_for_keyword(keyword["id"])}
+    assert rows["Verwijderd"]["expired"] == 1 and rows["Verwijderd"]["expired_at"]
+    assert rows["Nog te koop"]["expired"] in (0, None)
+    assert rows["Onbekend"]["expired"] in (0, None)
+
+    # Gecontroleerde advertenties komen binnen 24 uur niet opnieuw aan de beurt; de onbekende wel
+    assert [r["title"] for r in db.get_results_to_check(7, 10)] == ["Onbekend"]
+    # Uitgeschakeld -> niets
+    assert scheduler.run_expiry_check(_settings(expiry_check_days=0)) == (0, 0)
+
+
+def test_check_ad_alive_status_codes(monkeypatch, real_fetch_market_results):
+    class Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+    class FakeHTTP:
+        def __init__(self, code):
+            self.code = code
+
+        def get(self, url, timeout=8, allow_redirects=True):
+            if isinstance(self.code, Exception):
+                raise self.code
+            return Resp(self.code)
+
+    for code, expected in ((200, True), (410, False), (404, False), (500, None), (ConnectionError("x"), None)):
+        monkeypatch.setattr(marketplace, "HTTP", FakeHTTP(code))
+        assert marketplace.check_ad_alive("https://example.com/ad") is expected
+
+
+def test_telegram_retries_on_rate_limit(monkeypatch, real_telegram_post):
+    class Resp:
+        def __init__(self, code, retry_after=None):
+            self.status_code, self.ok, self.text = code, code == 200, f"HTTP {code}"
+            self._retry = retry_after
+
+        def json(self):
+            return {"parameters": {"retry_after": self._retry}} if self._retry else {}
+
+    calls, sleeps = [], []
+
+    class FakeHTTP:
+        def __init__(self, responses):
+            self.responses = list(responses)
+
+        def post(self, url, json=None, timeout=10):
+            calls.append(url)
+            return self.responses.pop(0)
+
+    monkeypatch.setattr(notify.time_module, "sleep", lambda s: sleeps.append(s))
+
+    # 429 met retry_after 2 -> wachten en opnieuw -> 200
+    monkeypatch.setattr(notify, "HTTP", FakeHTTP([Resp(429, retry_after=2), Resp(200)]))
+    assert real_telegram_post("sendMessage", {"text": "hi"}, {"telegram_bot_id": "b", "telegram_chat_id": "c"}) is True
+    assert len(calls) == 2 and sleeps == [2]
+
+    # Blijvend 429 -> na 3 pogingen opgeven
+    calls.clear()
+    sleeps.clear()
+    monkeypatch.setattr(notify, "HTTP", FakeHTTP([Resp(429, retry_after=1)] * 3))
+    assert real_telegram_post("sendMessage", {"text": "hi"}, {"telegram_bot_id": "b", "telegram_chat_id": "c"}) is False
+    assert len(calls) == 3 and sleeps == [1, 1]
+
+    # Andere fout -> direct opgeven, geen retry
+    calls.clear()
+    monkeypatch.setattr(notify, "HTTP", FakeHTTP([Resp(400)]))
+    assert real_telegram_post("sendMessage", {"text": "hi"}, {"telegram_bot_id": "b", "telegram_chat_id": "c"}) is False
+    assert len(calls) == 1
+
+
+def test_item_to_ad_extracts_seller_url_attributes_description():
+    item = {
+        "itemId": "m9", "title": "Racefiets", "vipUrl": "/v/fietsen/m9",
+        "priceInfo": {"priceCents": 100000, "priceType": "FIXED"},
+        "sellerInformation": {"sellerName": "Thomas van Dijk", "sellerId": 123456},
+        "attributes": [{"key": "condition", "value": "Zo goed als nieuw"}, {"key": "frameSize", "value": "58 cm"}, {"key": "x", "value": ""}],
+        "description": "  Weinig   gereden,\n altijd binnen gestald. " + "x" * 400,
+    }
+    ad = marketplace._item_to_ad(item, "www.marktplaats.nl")
+    assert ad["seller_url"] == "https://www.marktplaats.nl/u/thomas-van-dijk/123456/"
+    assert ad["attributes"] == "Zo goed als nieuw · 58 cm"
+    assert ad["description"].startswith("Weinig gereden, altijd binnen gestald.") and len(ad["description"]) <= 300
+    caption = notify._ad_caption(ad, term="racefiets")
+    assert "Kenmerken = Zo goed als nieuw · 58 cm" in caption and "Weinig gereden" in caption

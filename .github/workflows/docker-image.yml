@@ -81,3 +81,29 @@ jobs:
             ghcr.io/terrorsource/mpwatcher:latest
             ghcr.io/terrorsource/mpwatcher:${{ github.sha }}
             ${{ github.event_name == 'release' && format('ghcr.io/terrorsource/mpwatcher:{0}', github.event.release.tag_name) || '' }}
+
+  scan:
+    # Kwetsbaarheden in base-image en Python-packages rapporteren (Trivy).
+    # Informatief: blokkeert de build niet, resultaten staan in de job-samenvatting.
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/terrorsource/mpwatcher:${{ github.sha }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"

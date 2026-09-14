@@ -12,6 +12,7 @@ from .config import (
     ACCEPT_LANGUAGE,
     CATEGORY_MAX_FETCH,
     CATEGORY_OVERSAMPLE,
+    DESCRIPTION_MAX_CHARS,
     USER_AGENT,
     MarketplaceError,
     logger,
@@ -244,6 +245,50 @@ def _extract_distance_km(item: dict) -> Optional[float]:
     return None
 
 
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return slug or "verkoper"
+
+
+def _extract_seller_url(item: dict, seller_name: str, domain: str) -> str:
+    """Profielpagina van de verkoper: /u/<naam>/<id>/ (de naam corrigeert de
+    marketplace zelf; het id is bepalend)."""
+    info = item.get("sellerInformation")
+    if not isinstance(info, dict):
+        return ""
+    sid = info.get("sellerId")
+    if not isinstance(sid, int) or sid <= 0:
+        return ""
+    return f"https://{domain}/u/{_slugify(seller_name)}/{sid}/"
+
+
+def _extract_attributes(item: dict, max_items: int = 4) -> str:
+    """Kenmerken zoals conditie en maat: 'Zo goed als nieuw · Maat 58' (best effort)."""
+    attrs = item.get("attributes")
+    if not isinstance(attrs, list):
+        return ""
+    values: list[str] = []
+    for a in attrs:
+        if not isinstance(a, dict):
+            continue
+        v = a.get("value")
+        if isinstance(v, str) and v.strip() and v.strip() not in values:
+            values.append(v.strip())
+        if len(values) >= max_items:
+            break
+    return " · ".join(values)
+
+
+def _extract_description(item: dict) -> str:
+    text = item.get("description")
+    if not isinstance(text, str):
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > DESCRIPTION_MAX_CHARS:
+        text = text[: DESCRIPTION_MAX_CHARS - 1].rstrip() + "…"
+    return text
+
+
 def _extract_seller_from_api_item(item: dict) -> str:
     direct_keys = (
         "sellerName", "seller", "vendor", "userName", "username",
@@ -439,6 +484,7 @@ def _item_to_ad(item: dict, domain: str) -> Optional[dict]:
     if image_url.startswith("//"):
         image_url = "https:" + image_url
 
+    seller = _extract_seller_from_api_item(item)
     return {
         "ad_id": ad_id,
         "title": item.get("title") or "",
@@ -447,12 +493,32 @@ def _item_to_ad(item: dict, domain: str) -> Optional[dict]:
         "url": url,
         "image_url": image_url,
         "posted_at": _extract_posted_at(item),
-        "seller": _extract_seller_from_api_item(item),
+        "seller": seller,
+        "seller_url": _extract_seller_url(item, seller, domain),
         "location": _extract_location(item),
         "distance_km": _extract_distance_km(item),
         "reserved": bool(item.get("reserved")),
+        "attributes": _extract_attributes(item),
+        "description": _extract_description(item),
         "category_id": item.get("categoryId"),
     }
+
+
+def check_ad_alive(url: str) -> Optional[bool]:
+    """Bestaat de advertentie nog? True = ja, False = verwijderd (HTTP 404/410),
+    None = onbekend (netwerkfout, blokkade) — dan niets concluderen."""
+    if not url:
+        return None
+    try:
+        resp = HTTP.get(url, timeout=8, allow_redirects=True)
+    except Exception as exc:
+        logger.debug("Controle op verlopen mislukt voor %s: %s", url, exc)
+        return None
+    if resp.status_code in (404, 410):
+        return False
+    if resp.status_code == 200:
+        return True
+    return None
 
 
 def fetch_market_results(

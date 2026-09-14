@@ -10,6 +10,8 @@ from . import marketplace as mp
 from . import notify
 from .config import (
     BACKOFF_MAX_HOURS,
+    EXPIRY_CHECK_BATCH,
+    EXPIRY_CHECK_INTERVAL_HOURS,
     SCHEDULER_STALE_SECONDS,
     SEARCH_SPACING_SECONDS,
     MarketplaceError,
@@ -171,10 +173,8 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
     mp.enrich_ads_with_seller(new_candidates)
 
     # Blocklist ná de seller-verrijking, anders glippen verkopers door
-    # waarvan de API geen naam meegeeft.
-    blocked_sellers = set()
-    if settings.get("blocklist_enabled"):
-        blocked_sellers = {s.strip().lower() for s in (settings.get("blocked_sellers") or []) if s.strip()}
+    # waarvan de API geen naam meegeeft. (Lege lijst = blocklist uit.)
+    blocked_sellers = {s.strip().lower() for s in (settings.get("blocked_sellers") or []) if s.strip()}
     if blocked_sellers:
         new_candidates = [
             ad for ad in new_candidates
@@ -264,10 +264,41 @@ def record_search_success(kw_id: int) -> None:
     )
 
 
+_last_expiry_check: Optional[float] = None
+
+
+def run_expiry_check(settings: dict, batch: int = EXPIRY_CHECK_BATCH) -> tuple[int, int]:
+    """Controleer recente advertenties op verwijderd/verlopen (HTTP 404/410).
+    Geeft (gecontroleerd, verlopen) terug. Twijfelgevallen (netwerkfout)
+    worden niet gemarkeerd."""
+    days = int(settings.get("expiry_check_days") or 0)
+    if not days:
+        return 0, 0
+    todo = db.get_results_to_check(days, batch)
+    if not todo:
+        return 0, 0
+
+    checked: list[int] = []
+    expired: list[int] = []
+    for row in todo:
+        alive = mp.check_ad_alive(row["url"])
+        if alive is None:
+            continue
+        checked.append(row["id"])
+        if alive is False:
+            expired.append(row["id"])
+            logger.info("Advertentie verlopen: %s", row.get("title"))
+        time_module.sleep(1)
+    db.mark_results_checked(checked, expired)
+    if checked:
+        logger.info("Controle op verlopen advertenties: %s gecontroleerd, %s verlopen", len(checked), len(expired))
+    return len(checked), len(expired)
+
+
 def run_scheduler_iteration(now: Optional[datetime] = None) -> int:
     """Eén ronde langs alle zoekwoorden. Geeft terug hoeveel seconden de lus
     daarna moet wachten. Los getrokken uit de lus zodat het testbaar is."""
-    global _last_heartbeat
+    global _last_heartbeat, _last_expiry_check
     _last_heartbeat = time_module.monotonic()
     now = now or datetime.now()
 
@@ -275,6 +306,15 @@ def run_scheduler_iteration(now: Optional[datetime] = None) -> int:
     keywords = db.load_keywords()
     if not keywords:
         return 30
+
+    # Eén keer per dag: recente advertenties controleren op verlopen.
+    mono = time_module.monotonic()
+    if _last_expiry_check is None or mono - _last_expiry_check >= EXPIRY_CHECK_INTERVAL_HOURS * 3600:
+        _last_expiry_check = mono
+        try:
+            run_expiry_check(settings)
+        except Exception:
+            logger.exception("Controle op verlopen advertenties mislukt")
 
     for kw in keywords:
         _last_heartbeat = time_module.monotonic()

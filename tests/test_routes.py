@@ -165,9 +165,9 @@ def test_results_search_and_pagination(client, monkeypatch):
 # --- blocklists --------------------------------------------------------------
 
 def test_seller_blocklist_save_and_add(client):
-    client.post("/blocklist/save", data={"blocklist_enabled": "ja", "blocked_sellers_text": "Gert\ngert\nArnaud\n"})
+    client.post("/blocklist/save", data={"blocked_sellers_text": "Gert\ngert\nArnaud\n"})
     s = db.load_settings()
-    assert s["blocklist_enabled"] is True and s["blocked_sellers"] == ["Gert", "Arnaud"]
+    assert s["blocked_sellers"] == ["Gert", "Arnaud"]
 
     client.post("/blocklist/add", data={"seller": "Henk", "keyword_id": ""})
     assert "Henk" in db.load_settings()["blocked_sellers"]
@@ -288,3 +288,52 @@ def test_config_skip_reserved_saved(client):
     assert db.load_settings()["skip_reserved"] is True
     client.post("/config/timer", data={"marketplace": "marktplaats", "skip_reserved": "nee", "sleep_mode": "nee"})
     assert db.load_settings()["skip_reserved"] is False
+
+
+# --- v23: favicon, Nu zoeken, blocklist zonder schakelaar --------------------
+
+def test_favicon_and_icon_links(client):
+    html = client.get("/").get_data(as_text=True)
+    assert 'rel="icon"' in html and "favicon.svg" in html and "apple-touch-icon" in html
+    assert client.get("/static/favicon.svg").status_code == 200
+    assert client.get("/static/apple-touch-icon.png").status_code == 200
+    resp = client.get("/favicon.ico")
+    assert resp.status_code == 200 and resp.mimetype == "image/png"
+
+
+def test_manual_search_from_results_returns_to_results(client):
+    client.post("/keyword/add", data={"term": "next-test"})
+    kid = _last_keyword_id()
+    resp = client.post(f"/keyword/{kid}/manual", data={"next": "results"})
+    assert resp.status_code == 302 and resp.headers["Location"].endswith(f"/keyword/{kid}/results")
+    resp = client.post(f"/keyword/{kid}/manual")
+    assert resp.headers["Location"].endswith("/")
+    client.post(f"/keyword/{kid}/delete")
+
+
+def test_blocklist_without_toggle(client):
+    client.post("/blocklist/save", data={"blocked_sellers_text": "Gert\n"})
+    s = db.load_settings()
+    assert s["blocked_sellers"] == ["Gert"] and "blocklist_enabled" not in s
+    html = client.get("/config").get_data(as_text=True)
+    assert 'name="blocklist_enabled"' not in html
+    client.post("/blocklist/save", data={"blocked_sellers_text": ""})
+
+
+def test_results_show_seller_link_attributes_and_expired(client):
+    client.post("/keyword/add", data={"term": "v23-render"})
+    kid = _last_keyword_id()
+    ad = _ad("x1", "Canyon Ultimate 58", 145000, seller="Thomas", location="De Bilt")
+    ad.update(seller_url="https://www.marktplaats.nl/u/thomas/123/", attributes="Zo goed als nieuw · Maat 58",
+              description="Weinig gereden, altijd binnen gestald.")
+    db.insert_new_ads(kid, [ad])
+    html = client.get(f"/keyword/{kid}/results").get_data(as_text=True)
+    assert 'href="https://www.marktplaats.nl/u/thomas/123/"' in html
+    assert "Zo goed als nieuw · Maat 58" in html and 'title="Weinig gereden' in html
+    assert "Nu zoeken" in html and "verlopen" not in html
+
+    row_id = db.connect().execute("SELECT id FROM results WHERE ad_id = 'x1'").fetchone()[0]
+    db.mark_results_checked([row_id], [row_id])
+    html = client.get(f"/keyword/{kid}/results").get_data(as_text=True)
+    assert "verlopen" in html
+    client.post(f"/keyword/{kid}/delete")

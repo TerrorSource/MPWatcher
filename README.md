@@ -19,6 +19,8 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
 - **Categoriefilter** per zoekwoord (bijv. alleen *Tickets en Kaartjes*)  
 - **Advertenties negeren** op titel, naast het blokkeren van verkopers  
 - **Herplaatsingen** (zelfde advertentie opnieuw geplaatst) worden niet nogmaals gemeld  
+- **Verlopen advertenties** worden dagelijks gedetecteerd en gemarkeerd  
+- Meldingen met plaats, afstand, kenmerken (conditie, maat) en een stukje omschrijving  
 - Veel nieuwe advertenties tegelijk? Dan één **samenvattend bericht** i.p.v. losse meldingen  
 - Overzicht met de **laatste nieuwe advertenties** over alle zoekwoorden heen  
 - **Meldingenlogboek**: wat is gemeld, wat is onderdrukt en waarom  
@@ -142,6 +144,10 @@ Ga in de webinterface naar **Configuratie**.
   Verkopers plaatsen advertenties vaak opnieuw (nieuw advertentie-id, zelfde
   inhoud). Dezelfde titel + verkoper + prijs binnen dit aantal dagen wordt
   niet nogmaals gemeld. `0` = uit.
+- **Verlopen advertenties controleren (dagen)**  
+  Advertenties uit deze periode worden één keer per dag gecontroleerd; is een
+  advertentie van de marketplace verdwenen, dan krijgt ze het label
+  *verlopen*. `0` = uit.
 - **Gereserveerde advertenties**  
   Tonen en melden met een label (standaard), of volledig overslaan.
 
@@ -188,8 +194,10 @@ Gebruik de knop **“Test Telegram”** om te controleren of alles werkt.
 ## 🚫 Blocklist verkopers
 
 Onder **Configuratie → Blocklist verkopers** kun je verkopers uitsluiten
-(één naam per regel). Advertenties van deze verkopers worden genegeerd en
-dus ook niet via Telegram gemeld.
+(één naam per regel; een lege lijst betekent uit). Advertenties van deze
+verkopers worden genegeerd en dus ook niet via Telegram gemeld. De
+verkopersnaam in de resultaten linkt naar het Marktplaats-profiel, zodat je
+andere advertenties en beoordelingen kunt bekijken voordat je blokkeert.
 
 Op de resultatenpagina van een zoekwoord staat per advertentie een knop
 **Negeren → Verkoper** om de verkoper direct aan de blocklist toe te voegen

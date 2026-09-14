@@ -104,8 +104,15 @@ def _ad_caption(ad: dict, term: str = "") -> str:
     place = _place(ad)
     if place:
         lines.append(f"Plaats = {place}")
+    attributes = (ad.get("attributes") or "").strip()
+    if attributes:
+        lines.append(f"Kenmerken = {attributes}")
     if posted_at:
         lines.append(f"Datum = {posted_at}")
+    description = (ad.get("description") or "").strip()
+    if description:
+        snippet = description if len(description) <= 160 else description[:159].rstrip() + "…"
+        lines.append(f"\n{snippet}")
     return "\n".join(lines)
 
 

@@ -59,6 +59,12 @@
           </select>
         </div>
 
+        <div class="form-field">
+          <label class="form-label">Verlopen advertenties controleren <span>dagen; advertenties uit deze periode worden dagelijks gecontroleerd en als "verlopen" gemarkeerd zodra ze van de marketplace zijn. 0 = uit</span></label>
+          <input class="input" type="number" min="0" max="90" name="expiry_check_days"
+                 value="{{ settings.expiry_check_days }}">
+        </div>
+
         <div class="divider"></div>
 
         <div class="form-field">
@@ -164,20 +170,13 @@
         <div class="card-kicker">Filter</div>
         <div class="card-title">Blocklist verkopers</div>
         <p class="card-description">
-          Als dit aan staat, worden advertenties van geblokkeerde verkopers genegeerd.
+          Advertenties van deze verkopers worden genegeerd (lege lijst = niets geblokkeerd).
+          Op de resultatenpagina kun je een verkoper met één klik toevoegen.
         </p>
       </div>
     </div>
 
     <form method="post" action="{{ url_for('blocklist_save') }}" class="form-grid-1">
-      <div class="form-field">
-        <label class="form-label">Blocklist</label>
-        <select class="select" name="blocklist_enabled">
-          <option value="nee" {% if not settings.blocklist_enabled %}selected{% endif %}>Uit</option>
-          <option value="ja" {% if settings.blocklist_enabled %}selected{% endif %}>Aan</option>
-        </select>
-      </div>
-
       <div class="form-field">
         <label class="form-label">Geblokkeerde verkopers (1 per regel)</label>
         <textarea

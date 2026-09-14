@@ -49,6 +49,12 @@ def init_db() -> None:
                     location TEXT,
                     distance_km REAL,
                     reserved INTEGER,
+                    seller_url TEXT,
+                    attributes TEXT,
+                    description TEXT,
+                    expired INTEGER DEFAULT 0,
+                    expired_at TEXT,
+                    checked_at TEXT,
                     first_seen_at TEXT,
                     posted_at TEXT,
                     posted_ts TEXT,
@@ -108,6 +114,8 @@ def init_db() -> None:
                 ("posted_at", "TEXT"), ("seller", "TEXT"), ("posted_ts", "TEXT"),
                 ("price_cents", "INTEGER"), ("location", "TEXT"),
                 ("distance_km", "REAL"), ("reserved", "INTEGER"),
+                ("seller_url", "TEXT"), ("attributes", "TEXT"), ("description", "TEXT"),
+                ("expired", "INTEGER DEFAULT 0"), ("expired_at", "TEXT"), ("checked_at", "TEXT"),
             ):
                 if col not in cols:
                     conn.execute(f"ALTER TABLE results ADD COLUMN {col} {ctype}")
@@ -142,7 +150,7 @@ def _import_legacy_json(conn: sqlite3.Connection) -> None:
             data = {}
 
         if isinstance(data, dict):
-            for key in ("sleep_mode", "manual_telegram", "blocklist_enabled"):
+            for key in ("sleep_mode", "manual_telegram"):
                 if key in data:
                     data[key] = str(data[key]).strip().lower() == "ja"
             existing = {row["key"] for row in conn.execute("SELECT key FROM settings")}
@@ -283,7 +291,7 @@ def load_settings() -> dict:
     mp = str(merged.get("marketplace") or "marktplaats").strip().lower()
     merged["marketplace"] = "2dehands" if mp in ("2dehands", "2dehands.be", "2dehandsbe") else "marktplaats"
 
-    for key in ("sleep_mode", "manual_telegram", "blocklist_enabled", "price_drop_alerts", "skip_reserved"):
+    for key in ("sleep_mode", "manual_telegram", "price_drop_alerts", "skip_reserved"):
         merged[key] = bool(merged.get(key))
 
     digest = int_or_none(merged.get("telegram_digest_threshold"))
@@ -291,6 +299,9 @@ def load_settings() -> dict:
 
     repost = int_or_none(merged.get("repost_dedup_days"))
     merged["repost_dedup_days"] = max(0, repost) if repost is not None else 30
+
+    expiry = int_or_none(merged.get("expiry_check_days"))
+    merged["expiry_check_days"] = max(0, min(90, expiry)) if expiry is not None else 7
 
     for key in ("blocked_sellers", "blocked_titles"):
         if not isinstance(merged.get(key), list):
@@ -543,14 +554,16 @@ def insert_new_ads(keyword_id: int, ads: list[dict]) -> list[dict]:
                         """
                         INSERT INTO results
                             (keyword_id, ad_id, title, price, price_cents, url, image_url, seller,
-                             location, distance_km, reserved, first_seen_at, posted_at, posted_ts)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             location, distance_km, reserved, seller_url, attributes, description,
+                             first_seen_at, posted_at, posted_ts)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             keyword_id, ad["ad_id"], ad.get("title", ""), ad.get("price", ""),
                             ad.get("price_cents"),
                             ad.get("url", ""), ad.get("image_url", ""), ad.get("seller", ""),
                             ad.get("location", ""), ad.get("distance_km"), 1 if ad.get("reserved") else 0,
+                            ad.get("seller_url", ""), ad.get("attributes", ""), ad.get("description", ""),
                             now_iso, ad.get("posted_at", ""), posted_ts,
                         ),
                     )
@@ -609,7 +622,11 @@ def update_known_ads(keyword_id: int, ads: list[dict]) -> None:
                             ELSE location
                         END,
                         distance_km = COALESCE(?, distance_km),
-                        reserved = ?
+                        reserved = ?,
+                        seller_url = COALESCE(NULLIF(?, ''), seller_url),
+                        attributes = COALESCE(NULLIF(?, ''), attributes),
+                        description = COALESCE(NULLIF(?, ''), description),
+                        expired = 0, expired_at = NULL
                     WHERE keyword_id = ? AND ad_id = ?
                     """,
                     (
@@ -621,6 +638,7 @@ def update_known_ads(keyword_id: int, ads: list[dict]) -> None:
                         ad.get("seller", ""), ad.get("seller", ""),
                         ad.get("location", ""), ad.get("location", ""),
                         ad.get("distance_km"), 1 if ad.get("reserved") else 0,
+                        ad.get("seller_url", ""), ad.get("attributes", ""), ad.get("description", ""),
                         keyword_id, ad["ad_id"],
                     ),
                 )
@@ -645,8 +663,8 @@ def get_results_for_keyword(keyword_id: int, limit: int = 100, offset: int = 0, 
     try:
         rows = conn.execute(
             f"""
-            SELECT title, price, url, image_url, seller, location, distance_km, reserved,
-                   first_seen_at, posted_at
+            SELECT title, price, url, image_url, seller, seller_url, location, distance_km, reserved,
+                   attributes, description, expired, expired_at, first_seen_at, posted_at
             FROM results
             WHERE {where}
             ORDER BY COALESCE(posted_ts, first_seen_at) DESC, id DESC
@@ -675,7 +693,7 @@ def get_recent_results(limit: int = 10) -> list[dict]:
         rows = conn.execute(
             """
             SELECT r.title, r.price, r.url, r.image_url, r.seller, r.location,
-                   r.distance_km, r.reserved, r.first_seen_at, r.keyword_id, k.term
+                   r.distance_km, r.reserved, r.expired, r.first_seen_at, r.keyword_id, k.term
             FROM results r
             LEFT JOIN keywords k ON k.id = r.keyword_id
             ORDER BY r.first_seen_at DESC, r.id DESC
@@ -710,6 +728,55 @@ def delete_results_with_titles(titles: list[str]) -> int:
             with conn:
                 conn.executemany("DELETE FROM results WHERE id = ?", [(i,) for i in doomed])
         return len(doomed)
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------------------------
+# Verlopen advertenties
+# ------------------------------------------------------------------------------
+
+def get_results_to_check(days: int, limit: int, recheck_after_hours: int = 24) -> list[dict]:
+    """Recente, nog niet als verlopen gemarkeerde advertenties die (opnieuw)
+    gecontroleerd mogen worden; oudste controle eerst."""
+    now = datetime.now()
+    cutoff = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    recheck = (now - timedelta(hours=recheck_after_hours)).isoformat(timespec="seconds")
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, url, title FROM results
+            WHERE (expired IS NULL OR expired = 0)
+              AND first_seen_at >= ?
+              AND (checked_at IS NULL OR checked_at < ?)
+            ORDER BY checked_at IS NOT NULL, checked_at, id
+            LIMIT ?
+            """,
+            (cutoff, recheck, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_results_checked(ids: list[int], expired_ids: list[int]) -> None:
+    if not ids:
+        return
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    expired = set(expired_ids)
+    conn = connect()
+    try:
+        with conn:
+            conn.executemany(
+                "UPDATE results SET checked_at = ? WHERE id = ?",
+                [(now_iso, i) for i in ids],
+            )
+            if expired:
+                conn.executemany(
+                    "UPDATE results SET expired = 1, expired_at = ? WHERE id = ?",
+                    [(now_iso, i) for i in expired],
+                )
     finally:
         conn.close()
 

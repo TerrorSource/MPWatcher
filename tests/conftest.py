@@ -13,14 +13,21 @@ os.environ["MPWATCHER_DISABLE_WORKER"] = "1"
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mpwatcher import marketplace as _marketplace  # noqa: E402
+from mpwatcher import notify as _notify  # noqa: E402
 
-# De echte functie, voor tests die de client zelf willen testen (met gemockte _api_get).
+# De echte functies, voor tests die de client zelf willen testen (met gemockte HTTP).
 _REAL_FETCH_MARKET_RESULTS = _marketplace.fetch_market_results
+_REAL_TELEGRAM_POST = _notify._telegram_post
 
 
 @pytest.fixture()
 def real_fetch_market_results():
     return _REAL_FETCH_MARKET_RESULTS
+
+
+@pytest.fixture()
+def real_telegram_post():
+    return _REAL_TELEGRAM_POST
 
 
 @pytest.fixture(autouse=True)

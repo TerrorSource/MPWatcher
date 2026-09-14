@@ -3,6 +3,16 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v23
+
+- **Verlopen advertenties**: advertenties van de afgelopen 7 dagen (instelbaar) worden dagelijks gecontroleerd; verwijderde exemplaren (HTTP 410) krijgen het label *verlopen* in resultaten en overzicht.
+- **Verkopersprofiel**: de verkopersnaam in de resultaten linkt naar het Marktplaats-profiel (andere advertenties, beoordelingen).
+- **Kenmerken en omschrijving**: conditie/maat e.d. onder de titel en in de Telegram-melding; de eerste regels van de omschrijving in de melding en als tooltip op de titel.
+- **Nu zoeken** op de resultatenpagina.
+- Favicon (SVG) en app-icoon voor het beginscherm van je telefoon; geen 404 meer op `/favicon.ico`.
+- De aan/uit-schakelaar van de verkopers-blocklist is weg: een lege lijst betekent uit, net als bij genegeerde titels.
+- Beheer: Trivy-kwetsbaarheidsscan van het image in CI (informatief); test voor de Telegram-retry.
+
 ## v22
 
 - **Backoff bij blokkade**: na een mislukte zoekopdracht (bijv. HTTP 403/429) wordt het interval van dat zoekwoord per mislukking verdubbeld (max 6 uur) in plaats van elk interval opnieuw te hameren. Herstelt vanzelf na een geslaagde run.

@@ -80,11 +80,21 @@ DEFAULT_SETTINGS = {
     # Gereserveerde advertenties overslaan (meestal al verkocht)
     "skip_reserved": False,
 
-    # Blocklists
-    "blocklist_enabled": False,
+    # Advertenties van de afgelopen N dagen dagelijks controleren op
+    # verwijderd/verlopen (0 = uit).
+    "expiry_check_days": 7,
+
+    # Blocklists (een lege lijst = uit)
     "blocked_sellers": [],
     "blocked_titles": [],
 }
+
+# Controle op verlopen advertenties: hoe vaak, en hoeveel per ronde.
+EXPIRY_CHECK_INTERVAL_HOURS = 24
+EXPIRY_CHECK_BATCH = 60
+
+# Maximale lengte van de opgeslagen omschrijving.
+DESCRIPTION_MAX_CHARS = 300
 
 # Na een mislukte zoekopdracht (blokkade, storing) wordt het interval van dat
 # zoekwoord per mislukking verdubbeld tot dit maximum, om een tijdelijke

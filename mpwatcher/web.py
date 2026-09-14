@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
 
-from flask import Flask, abort, flash, redirect, render_template, request, url_for
+from flask import Flask, abort, flash, redirect, render_template, request, send_from_directory, url_for
 
 from . import db
 from . import marketplace as mp
@@ -61,6 +61,12 @@ def _block_cross_site_posts():
 def _flash_not_found():
     flash("Zoekwoord niet gevonden.", "error")
     return redirect(url_for("index"))
+
+
+@app.route("/favicon.ico")
+def favicon():
+    # Browsers zonder <link rel="icon">-ondersteuning (en sommige bots) vragen dit pad.
+    return send_from_directory(app.static_folder, "apple-touch-icon.png", max_age=86400)
 
 
 # ------------------------------------------------------------------------------
@@ -185,19 +191,25 @@ def manual_search(keyword_id: int):
     if not kw:
         return _flash_not_found()
 
+    # Vanaf de resultatenpagina terug naar de resultaten, anders naar het overzicht.
+    back = (
+        url_for("results", keyword_id=keyword_id)
+        if request.form.get("next") == "results" else url_for("index")
+    )
+
     try:
         total, new_count = scheduler.run_search_for_keyword(kw, settings, manual=True)
     except MarketplaceError as exc:
         scheduler.record_search_failure(kw, str(exc))
         flash(f"Zoekactie voor '{kw['term']}' mislukt: {exc}", "error")
-        return redirect(url_for("index"))
+        return redirect(back)
 
     scheduler.record_search_success(keyword_id)
     flash(
         f"Handmatige zoekactie voor '{kw['term']}' uitgevoerd ({total} resultaten, {new_count} nieuw).",
         "success",
     )
-    return redirect(url_for("index"))
+    return redirect(back)
 
 
 @app.route("/keyword/<int:keyword_id>/reset", methods=["POST"])
@@ -305,11 +317,9 @@ def keyword_set_category(keyword_id: int):
 
 @app.route("/blocklist/save", methods=["POST"])
 def blocklist_save():
-    db.save_settings({
-        "blocklist_enabled": form_bool(request.form.get("blocklist_enabled")),
-        "blocked_sellers": clean_lines(request.form.get("blocked_sellers_text")),
-    })
-    flash("Blocklist verkopers opgeslagen.", "success")
+    sellers = clean_lines(request.form.get("blocked_sellers_text"))
+    db.save_settings({"blocked_sellers": sellers})
+    flash(f"Blocklist verkopers opgeslagen ({len(sellers)} verkopers).", "success")
     return redirect(url_for("config_view"))
 
 
@@ -323,7 +333,7 @@ def blocklist_add():
         current = settings.get("blocked_sellers") or []
         if seller.lower() not in {str(x).strip().lower() for x in current}:
             current.append(seller)
-        db.save_settings({"blocklist_enabled": True, "blocked_sellers": current})
+        db.save_settings({"blocked_sellers": current})
         flash(f"Verkoper '{seller}' geblokkeerd.", "success")
 
     if keyword_id is not None:
@@ -400,6 +410,10 @@ def config_save_timer():
     repost = int_or_none(request.form.get("repost_dedup_days"))
     if repost is not None:
         updates["repost_dedup_days"] = max(0, min(365, repost))
+
+    expiry = int_or_none(request.form.get("expiry_check_days"))
+    if expiry is not None:
+        updates["expiry_check_days"] = max(0, min(90, expiry))
 
     updates["skip_reserved"] = form_bool(request.form.get("skip_reserved"))
     updates["sleep_mode"] = form_bool(request.form.get("sleep_mode"))
