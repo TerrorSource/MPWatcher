@@ -17,7 +17,7 @@ from .config import (
     MarketplaceError,
     logger,
 )
-from .utils import format_cents, int_or_none, normalize_title, title_passes_filters
+from .utils import attributes_pass_filter, format_cents, int_or_none, normalize_title, title_passes_filters
 
 # ------------------------------------------------------------------------------
 # Status van de worker
@@ -126,6 +126,19 @@ def format_next_run(next_dt: Optional[datetime], now: datetime) -> str:
 # Eén zoekactie
 # ------------------------------------------------------------------------------
 
+def keyword_settings(keyword: dict, settings: dict) -> dict:
+    """Globale instellingen met de overrides van één zoekwoord
+    (marketplace en Telegram-chat)."""
+    merged = dict(settings)
+    choice = (keyword.get("marketplace") or "").strip().lower()
+    if choice in ("marktplaats", "2dehands"):
+        merged["marketplace"] = choice
+    chat = (keyword.get("telegram_chat_id") or "").strip()
+    if chat:
+        merged["telegram_chat_id"] = chat
+    return merged
+
+
 def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) -> tuple[int, int]:
     """Eén zoekactie. Geeft (aantal resultaten na filters, aantal nieuw) terug.
     Gooit MarketplaceError als de zoekopdracht zelf mislukt.
@@ -139,6 +152,7 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
     min_price = int_or_none(keyword.get("min_price"))
     max_price = int_or_none(keyword.get("max_price"))
     first_run = keyword.get("last_run_at") in (None, "", "Nooit")
+    settings = keyword_settings(keyword, settings)
 
     raw_ads = mp.fetch_market_results(
         term, settings, limit_per_run,
@@ -157,6 +171,8 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
         if max_price is not None and (cents is None or cents > max_price * 100):
             continue
         if not title_passes_filters(ad.get("title", ""), keyword.get("include_terms"), keyword.get("exclude_terms")):
+            continue
+        if not attributes_pass_filter(ad.get("attributes", ""), keyword.get("attr_terms")):
             continue
         if blocked_titles and normalize_title(ad.get("title")) in blocked_titles:
             continue

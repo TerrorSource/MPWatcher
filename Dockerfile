@@ -1,10 +1,16 @@
 FROM python:3.13-slim
 
+# Security-updates van het base-image (Trivy blokkeert in CI op CRITICAL)
+RUN apt-get update \
+    && apt-get -y --no-install-recommends upgrade \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Dependencies
+# Dependencies (pip/setuptools eerst bijwerken: de meegeleverde versies bevatten bekende kwetsbaarheden)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip setuptools \
+    && pip install --no-cache-dir -r requirements.txt
 
 # App files
 COPY . .

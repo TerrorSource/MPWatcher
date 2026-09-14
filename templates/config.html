@@ -126,8 +126,9 @@
         </div>
 
         <div class="form-field">
-          <label class="form-label">Chat ID</label>
-          <input class="input" type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}">
+          <label class="form-label">Chat ID('s) <span>één of meer ontvangers, komma-gescheiden; per zoekwoord te overschrijven</span></label>
+          <input class="input" type="text" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}"
+                 placeholder="bijv. 123456789, 987654321">
         </div>
 
         <div class="form-field">

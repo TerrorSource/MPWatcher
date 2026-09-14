@@ -99,3 +99,13 @@ def format_relative_time(iso_str: str | None) -> str:
     if days < 7:
         return f"{days} dagen geleden"
     return dt.strftime("%d-%m-%Y")
+
+
+def attributes_pass_filter(attributes: str | None, attr_terms: str | None) -> bool:
+    """Kenmerkfilter: minstens één van de opgegeven woorden moet in de
+    kenmerken ('Zo goed als nieuw · 58 cm') voorkomen. Geen woorden = alles."""
+    required = parse_terms(attr_terms)
+    if not required:
+        return True
+    a = (attributes or "").lower()
+    return any(word in a for word in required)

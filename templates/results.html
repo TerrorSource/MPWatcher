@@ -41,6 +41,7 @@
       {% endif %}
       {% if query %}voor “{{ query }}”{% endif %}
     </span>
+    <span class="new-count" id="results-new-count" hidden></span>
   </form>
 
   {% if ads %}
@@ -57,7 +58,7 @@
       </div>
 
       {% for ad in ads %}
-        <div class="table-row table-row--results">
+        <div class="table-row table-row--results" data-first-seen="{{ ad.first_seen_at }}">
           <!-- Foto -->
           <div>
             {% if ad.image_url %}
@@ -158,4 +159,22 @@
     </div>
   {% endif %}
 </section>
+
+<script>
+  // "Nieuw sinds je laatste bezoek" per zoekwoord (localStorage, alleen deze browser).
+  (function () {
+    var key = "mpw-seen-kw-{{ keyword.id }}", last = null, newest = "", count = 0;
+    try { last = localStorage.getItem(key); } catch (e) {}
+    document.querySelectorAll(".table-row--results[data-first-seen]").forEach(function (el) {
+      var seen = el.dataset.firstSeen || "";
+      if (seen > newest) { newest = seen; }
+      if (last && seen > last) { el.classList.add("is-new"); count++; }
+    });
+    var badge = document.getElementById("results-new-count");
+    if (badge && count) { badge.textContent = count + " nieuw sinds je laatste bezoek"; badge.hidden = false; }
+    {% if not query and offset == 0 %}
+    try { if (newest) { localStorage.setItem(key, newest); } } catch (e) {}
+    {% endif %}
+  })();
+</script>
 {% endblock %}

@@ -31,7 +31,9 @@ jobs:
         run: pytest -q
 
   build-and-push:
-    # Alleen bouwen/pushen na geslaagde tests, en nooit vanuit een pull request
+    # Alleen bouwen/pushen na geslaagde tests, en nooit vanuit een pull request.
+    # Volgorde: lokaal bouwen (amd64) → Trivy-scan → pas bij een schone scan
+    # multi-arch bouwen en pushen. Dankzij de buildcache is de tweede build snel.
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -65,7 +67,39 @@ jobs:
             echo "version=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push
+      - name: Build (amd64, lokaal) voor de scan
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+          tags: mpwatcher:scan
+
+      - name: Trivy — blokkeer op CRITICAL
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: mpwatcher:scan
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Trivy — rapporteer HIGH (informatief)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: mpwatcher:scan
+          format: table
+          severity: HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+          skip-setup-trivy: true
+
+      - name: Build and push (multi-arch)
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -76,34 +110,8 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
-          # Bij een release wordt naast :latest ook een versie-tag gepusht (bijv. :v20).
+          # Bij een release wordt naast :latest ook een versie-tag gepusht (bijv. :v25).
           tags: |
             ghcr.io/terrorsource/mpwatcher:latest
             ghcr.io/terrorsource/mpwatcher:${{ github.sha }}
             ${{ github.event_name == 'release' && format('ghcr.io/terrorsource/mpwatcher:{0}', github.event.release.tag_name) || '' }}
-
-  scan:
-    # Kwetsbaarheden in base-image en Python-packages rapporteren (Trivy).
-    # Informatief: blokkeert de build niet, resultaten staan in de job-samenvatting.
-    needs: build-and-push
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Login to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Trivy image scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ghcr.io/terrorsource/mpwatcher:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "0"

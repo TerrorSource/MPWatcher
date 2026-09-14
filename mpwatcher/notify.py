@@ -9,17 +9,35 @@ TELEGRAM_MAX_ATTEMPTS = 3
 TELEGRAM_MAX_RETRY_AFTER = 30  # seconden; langer wachten blokkeert de scheduler te veel
 
 
+def parse_chat_ids(raw: str | None) -> list[str]:
+    """'123, -456 789' -> ['123', '-456', '789'] — één of meer ontvangers."""
+    if not raw:
+        return []
+    ids: list[str] = []
+    for part in str(raw).replace(";", ",").replace(" ", ",").split(","):
+        p = part.strip()
+        if p and p not in ids:
+            ids.append(p)
+    return ids
+
+
 def _telegram_post(method: str, payload: dict, settings: dict, label: str = "") -> bool:
-    """POST naar de Bot API met retry bij rate-limiting (HTTP 429 + retry_after).
-    Geeft True terug als Telegram het bericht geaccepteerd heeft."""
+    """POST naar de Bot API, naar elke geconfigureerde chat (komma-gescheiden),
+    met retry bij rate-limiting. True als minstens één chat het bericht kreeg."""
     bot_id = (settings.get("telegram_bot_id") or "").strip()
-    chat_id = (settings.get("telegram_chat_id") or "").strip()
-    if not bot_id or not chat_id:
+    chat_ids = parse_chat_ids(settings.get("telegram_chat_id"))
+    if not bot_id or not chat_ids:
         return False
 
     api_url = f"https://api.telegram.org/bot{bot_id}/{method}"
-    payload = {"chat_id": chat_id, **payload}
+    ok_any = False
+    for chat_id in chat_ids:
+        if _telegram_post_one(api_url, {"chat_id": chat_id, **payload}, method, label):
+            ok_any = True
+    return ok_any
 
+
+def _telegram_post_one(api_url: str, payload: dict, method: str, label: str) -> bool:
     for attempt in range(1, TELEGRAM_MAX_ATTEMPTS + 1):
         try:
             resp = HTTP.post(api_url, json=payload, timeout=10)

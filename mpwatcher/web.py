@@ -81,7 +81,7 @@ def index():
     now = datetime.now()
 
     for kw in keywords:
-        kw["mp_url"] = mp.build_search_url(kw["term"], settings)
+        kw["mp_url"] = mp.build_search_url(kw["term"], scheduler.keyword_settings(kw, settings))
         kw["result_count"] = counts.get(kw["id"], 0)
         kw["last_run_display"] = format_relative_time(kw["last_run_at"])
         kw["next_run_display"] = scheduler.format_next_run(scheduler.compute_next_run(kw, settings, now), now)
@@ -131,6 +131,7 @@ def add_keyword():
         limit_per_run=settings["default_limit_per_run"],
         exclude_terms=request.form.get("exclude_terms", ""),
         include_terms=request.form.get("include_terms", ""),
+        attr_terms=request.form.get("attr_terms", ""),
     )
 
     # Direct een eerste (stille) zoekactie zodat de resultatenpagina meteen
@@ -177,6 +178,13 @@ def edit_keyword(keyword_id: int):
         fields["exclude_terms"] = normalize_terms(request.form.get("exclude_terms"))
     if "include_terms" in request.form:
         fields["include_terms"] = normalize_terms(request.form.get("include_terms"))
+    if "attr_terms" in request.form:
+        fields["attr_terms"] = normalize_terms(request.form.get("attr_terms"))
+    if "telegram_chat_id" in request.form:
+        fields["telegram_chat_id"] = ", ".join(notify.parse_chat_ids(request.form.get("telegram_chat_id")))
+    if "marketplace" in request.form:
+        choice = (request.form.get("marketplace") or "").strip().lower()
+        fields["marketplace"] = choice if choice in ("marktplaats", "2dehands") else ""
 
     if not db.update_keyword_fields(keyword_id, **fields):
         flash("Zoekwoord niet gevonden.", "error")
@@ -265,12 +273,36 @@ def results(keyword_id: int):
 # Meldingenlogboek
 # ------------------------------------------------------------------------------
 
+NOTIFICATION_KINDS = {
+    "new": "Nieuw",
+    "price_drop": "Prijsverlaging",
+    "digest": "Samenvatting",
+    "suppressed": "Onderdrukt",
+    "silent": "Stille run",
+}
+
+
 @app.route("/notifications")
 def notifications():
-    items = db.get_notifications(limit=200)
+    kind = (request.args.get("kind") or "").strip()
+    if kind not in NOTIFICATION_KINDS:
+        kind = ""
+    keyword_id = int_or_none(request.args.get("keyword_id"))
+    query = (request.args.get("q") or "").strip()
+
+    items = db.get_notifications(limit=200, kind=kind, keyword_id=keyword_id, query=query)
     for it in items:
         it["created_display"] = format_relative_time(it.get("created_at"))
-    return render_template("notifications.html", items=items)
+    return render_template(
+        "notifications.html",
+        items=items,
+        kinds=NOTIFICATION_KINDS,
+        keywords=db.load_keywords(),
+        kind=kind,
+        keyword_id=keyword_id,
+        query=query,
+        filtered=bool(kind or keyword_id is not None or query),
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -286,7 +318,7 @@ def keyword_categories(keyword_id: int):
 
     categories: list[dict] = []
     try:
-        categories = mp.fetch_categories(kw["term"], settings)
+        categories = mp.fetch_categories(kw["term"], scheduler.keyword_settings(kw, settings))
     except MarketplaceError as exc:
         flash(f"Categorieën ophalen mislukt: {exc}", "error")
 

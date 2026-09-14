@@ -79,7 +79,10 @@ def init_db() -> None:
                     include_terms TEXT,
                     category_id INTEGER,
                     category_parent_id INTEGER,
-                    category_label TEXT
+                    category_label TEXT,
+                    attr_terms TEXT,
+                    telegram_chat_id TEXT,
+                    marketplace TEXT
                 )
                 """
             )
@@ -125,6 +128,7 @@ def init_db() -> None:
                 ("last_error", "TEXT"), ("exclude_terms", "TEXT"), ("include_terms", "TEXT"),
                 ("category_id", "INTEGER"), ("category_parent_id", "INTEGER"), ("category_label", "TEXT"),
                 ("last_error_at", "TEXT"), ("error_count", "INTEGER DEFAULT 0"),
+                ("attr_terms", "TEXT"), ("telegram_chat_id", "TEXT"), ("marketplace", "TEXT"),
             ):
                 if col not in kw_cols:
                     conn.execute(f"ALTER TABLE keywords ADD COLUMN {col} {ctype}")
@@ -355,6 +359,9 @@ def _row_to_keyword(row: sqlite3.Row) -> dict:
         "category_id": col("category_id"),
         "category_parent_id": col("category_parent_id"),
         "category_label": col("category_label") or "",
+        "attr_terms": col("attr_terms") or "",
+        "telegram_chat_id": col("telegram_chat_id") or "",
+        "marketplace": col("marketplace") or "",
     }
 
 
@@ -391,7 +398,7 @@ def keyword_exists(term: str) -> bool:
 
 def add_keyword_row(
     term: str, interval_minutes, min_price, max_price, limit_per_run,
-    exclude_terms: str = "", include_terms: str = "",
+    exclude_terms: str = "", include_terms: str = "", attr_terms: str = "",
 ) -> int:
     conn = connect()
     try:
@@ -400,12 +407,12 @@ def add_keyword_row(
                 """
                 INSERT INTO keywords
                     (term, interval_minutes, min_price, max_price, limit_per_run,
-                     last_run_at, exclude_terms, include_terms)
-                VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                     last_run_at, exclude_terms, include_terms, attr_terms)
+                VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
                 """,
                 (
                     term, interval_minutes, min_price, max_price, limit_per_run,
-                    normalize_terms(exclude_terms), normalize_terms(include_terms),
+                    normalize_terms(exclude_terms), normalize_terms(include_terms), normalize_terms(attr_terms),
                 ),
             )
             return cur.lastrowid
@@ -810,11 +817,26 @@ def log_notification(
         conn.close()
 
 
-def get_notifications(limit: int = 200) -> list[dict]:
+def get_notifications(
+    limit: int = 200, kind: str = "", keyword_id: Optional[int] = None, query: str = "",
+) -> list[dict]:
+    where = ["1=1"]
+    params: list = []
+    if kind:
+        where.append("kind = ?")
+        params.append(kind)
+    if keyword_id is not None:
+        where.append("keyword_id = ?")
+        params.append(keyword_id)
+    q = (query or "").strip()
+    if q:
+        where.append("(title LIKE ? OR detail LIKE ? OR term LIKE ?)")
+        params += [f"%{q}%"] * 3
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,)
+            f"SELECT * FROM notifications WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
+            (*params, limit),
         ).fetchall()
     finally:
         conn.close()

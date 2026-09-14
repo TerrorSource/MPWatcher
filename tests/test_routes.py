@@ -337,3 +337,57 @@ def test_results_show_seller_link_attributes_and_expired(client):
     html = client.get(f"/keyword/{kid}/results").get_data(as_text=True)
     assert "verlopen" in html
     client.post(f"/keyword/{kid}/delete")
+
+
+# --- v25 ----------------------------------------------------------------------
+
+def test_keyword_overrides_saved_and_rendered(client):
+    client.post("/keyword/add", data={"term": "override-test", "attr_terms": "Zo goed als nieuw, 58 CM"})
+    kid = _last_keyword_id()
+    assert db.get_keyword(kid)["attr_terms"] == "zo goed als nieuw, 58 cm"
+
+    client.post(f"/keyword/{kid}/edit", data={
+        "attr_terms": "58 cm", "telegram_chat_id": "111; 222 333", "marketplace": "2dehands",
+    })
+    kw = db.get_keyword(kid)
+    assert (kw["attr_terms"], kw["telegram_chat_id"], kw["marketplace"]) == ("58 cm", "111, 222, 333", "2dehands")
+
+    html = client.get("/").get_data(as_text=True)
+    assert 'value="111, 222, 333"' in html and "www.2dehands.be" in html  # zoeklink volgt de site-keuze
+    assert 'name="attr_terms"' in html
+
+    client.post(f"/keyword/{kid}/edit", data={"marketplace": "onzin"})
+    assert db.get_keyword(kid)["marketplace"] == ""
+    client.post(f"/keyword/{kid}/delete")
+
+
+def test_notifications_filters(client):
+    client.post("/keyword/add", data={"term": "filter-a"})
+    ka = _last_keyword_id()
+    client.post("/keyword/add", data={"term": "filter-b"})
+    kb = _last_keyword_id()
+    db.log_notification("new", ka, "filter-a", {"title": "Alpha fiets", "url": "https://example.com/a", "price": "€ 1,00"}, sent=True)
+    db.log_notification("suppressed", kb, "filter-b", {"title": "Beta fiets"}, detail="herplaatsing van bekende advertentie")
+
+    html = client.get("/notifications?kind=suppressed").get_data(as_text=True)
+    assert "Beta fiets" in html and "Alpha fiets" not in html
+    html = client.get(f"/notifications?keyword_id={ka}").get_data(as_text=True)
+    assert "Alpha fiets" in html and "Beta fiets" not in html
+    html = client.get("/notifications?q=herplaatsing").get_data(as_text=True)
+    assert "Beta fiets" in html and "Alpha fiets" not in html and "Wis filter" in html
+    html = client.get("/notifications?kind=onbekend").get_data(as_text=True)
+    assert "Alpha fiets" in html and "Beta fiets" in html  # ongeldige soort = geen filter
+
+    client.post(f"/keyword/{ka}/delete")
+    client.post(f"/keyword/{kb}/delete")
+
+
+def test_results_and_recent_have_new_since_markers(client):
+    client.post("/keyword/add", data={"term": "nieuw-sinds"})
+    kid = _last_keyword_id()
+    db.insert_new_ads(kid, [_ad("n1", "Iets", 1000)])
+    html = client.get(f"/keyword/{kid}/results").get_data(as_text=True)
+    assert 'data-first-seen="' in html and f'mpw-seen-kw-{kid}' in html and 'id="results-new-count"' in html
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-first-seen="' in html and "mpw-seen-recent" in html
+    client.post(f"/keyword/{kid}/delete")

@@ -16,6 +16,27 @@
     <a class="btn btn-soft" href="{{ url_for('index') }}">← Terug</a>
   </div>
 
+  <form method="get" action="{{ url_for('notifications') }}" class="inline-input-group" style="margin-bottom:12px;flex-wrap:wrap;">
+    <select class="select" name="kind" onchange="this.form.submit()">
+      <option value="" {% if not kind %}selected{% endif %}>Alle soorten</option>
+      {% for k, label in kinds.items() %}
+        <option value="{{ k }}" {% if kind == k %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <select class="select" name="keyword_id" onchange="this.form.submit()">
+      <option value="" {% if keyword_id is none %}selected{% endif %}>Alle zoekwoorden</option>
+      {% for kw in keywords %}
+        <option value="{{ kw.id }}" {% if keyword_id == kw.id %}selected{% endif %}>{{ kw.term }}</option>
+      {% endfor %}
+    </select>
+    <input class="input" type="search" name="q" value="{{ query }}" placeholder="Zoek in titel of details…"
+           style="max-width:none;text-align:left;flex:1;min-width:160px;">
+    <button type="submit" class="btn btn-soft">Filter</button>
+    {% if filtered %}
+      <a class="btn btn-ghost" href="{{ url_for('notifications') }}">Wis filter</a>
+    {% endif %}
+  </form>
+
   {% if items %}
     <div class="table-wrapper">
       <div class="table-header table-header--notifications">
@@ -66,8 +87,12 @@
     </div>
   {% else %}
     <div class="empty-state">
-      <strong>Nog geen meldingen.</strong>
-      Zodra een zoekactie iets nieuws vindt (of iets onderdrukt) verschijnt dat hier.
+      {% if filtered %}
+        <strong>Geen meldingen voor dit filter.</strong>
+      {% else %}
+        <strong>Nog geen meldingen.</strong>
+        Zodra een zoekactie iets nieuws vindt (of iets onderdrukt) verschijnt dat hier.
+      {% endif %}
     </div>
   {% endif %}
 </section>

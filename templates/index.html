@@ -60,6 +60,11 @@
           </div>
         </div>
 
+        <div class="form-field">
+          <label class="form-label">Kenmerk moet bevatten <span>één van, optioneel — conditie, maat, …</span></label>
+          <input class="input" type="text" name="attr_terms" placeholder="bijv. zo goed als nieuw, 58 cm">
+        </div>
+
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:10px;">
           <span class="chip-muted">Een categoriefilter kies je daarna via 📂 bij het zoekwoord.</span>
           <button type="submit" class="btn btn-primary">+ Zoekwoord toevoegen</button>
@@ -126,10 +131,12 @@
         <div class="card-title">Laatste nieuwe advertenties</div>
         <p class="card-description">De {{ recent|length }} meest recent gevonden advertenties over alle zoekwoorden heen.</p>
       </div>
+      <span class="new-count" id="recent-new-count" hidden></span>
     </div>
     <div class="recent-grid">
       {% for ad in recent %}
-        <a class="recent-card" href="{{ ad.url }}" target="_blank" rel="noopener noreferrer">
+        <a class="recent-card" href="{{ ad.url }}" target="_blank" rel="noopener noreferrer"
+           data-first-seen="{{ ad.first_seen_at }}">
           {% if ad.image_url %}
             <img src="{{ ad.image_url }}" alt="" loading="lazy">
           {% else %}
@@ -205,6 +212,29 @@
                   <input class="input" type="text" name="include_terms" form="kw-edit-{{ kw.id }}"
                          value="{{ kw.include_terms }}" placeholder="alles"
                          onchange="this.form.submit()">
+                </label>
+              </div>
+
+              <div class="filter-row">
+                <label title="Minstens één van deze woorden moet in de kenmerken staan (conditie, maat, …)">
+                  <span>kenmerk</span>
+                  <input class="input" type="text" name="attr_terms" form="kw-edit-{{ kw.id }}"
+                         value="{{ kw.attr_terms }}" placeholder="alle"
+                         onchange="this.form.submit()">
+                </label>
+                <label title="Telegram-chat-id('s) voor dit zoekwoord, komma-gescheiden; leeg = de chat uit de configuratie">
+                  <span>chat</span>
+                  <input class="input" type="text" name="telegram_chat_id" form="kw-edit-{{ kw.id }}"
+                         value="{{ kw.telegram_chat_id }}" placeholder="standaard"
+                         onchange="this.form.submit()">
+                </label>
+                <label title="Marketplace voor dit zoekwoord; standaard = de keuze uit de configuratie">
+                  <span>site</span>
+                  <select class="select" name="marketplace" form="kw-edit-{{ kw.id }}" onchange="this.form.submit()">
+                    <option value="" {% if not kw.marketplace %}selected{% endif %}>standaard</option>
+                    <option value="marktplaats" {% if kw.marketplace == "marktplaats" %}selected{% endif %}>Marktplaats.nl</option>
+                    <option value="2dehands" {% if kw.marketplace == "2dehands" %}selected{% endif %}>2dehands.be</option>
+                  </select>
                 </label>
               </div>
 
@@ -288,4 +318,21 @@
       </div>
     {% endif %}
   </section>
+
+  <script>
+    // "Nieuw sinds je laatste bezoek": onthoud per browser de nieuwste
+    // advertentie die je gezien hebt en markeer wat daarna is bijgekomen.
+    (function () {
+      var key = "mpw-seen-recent", last = null, newest = "", count = 0;
+      try { last = localStorage.getItem(key); } catch (e) {}
+      document.querySelectorAll(".recent-card[data-first-seen]").forEach(function (el) {
+        var seen = el.dataset.firstSeen || "";
+        if (seen > newest) { newest = seen; }
+        if (last && seen > last) { el.classList.add("is-new"); count++; }
+      });
+      var badge = document.getElementById("recent-new-count");
+      if (badge && count) { badge.textContent = count + " nieuw sinds je laatste bezoek"; badge.hidden = false; }
+      try { if (newest) { localStorage.setItem(key, newest); } } catch (e) {}
+    })();
+  </script>
 {% endblock %}

@@ -869,3 +869,33 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Nieuw sinds je laatste bezoek (client-side, localStorage) */
+
+.table-row--results.is-new {
+  box-shadow: inset 3px 0 0 var(--mp-orange);
+}
+
+.recent-card.is-new {
+  outline: 2px solid var(--mp-orange-soft);
+  outline-offset: -2px;
+}
+
+.new-count {
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  background: rgba(249, 115, 22, 0.18);
+  border: 1px solid rgba(249, 115, 22, 0.6);
+  color: var(--mp-orange-soft);
+  white-space: nowrap;
+}
+
+/* Kleine select in de filterrij */
+
+.filter-row .select {
+  padding: 4px 28px 4px 10px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+}

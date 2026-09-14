@@ -3,6 +3,16 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v25
+
+- **Trivy blokkeert nu écht**: het image wordt eerst lokaal gebouwd en gescand; alleen zonder CRITICAL-kwetsbaarheden (met fix beschikbaar) wordt het multi-arch gebouwd en gepusht. HIGH wordt informatief gerapporteerd.
+- **Image-hardening**: Debian-security-updates en een actuele pip/setuptools worden tijdens de build geïnstalleerd (loste 3 CRITICAL en 11 HIGH uit de eerste Trivy-scan op).
+- **Meerdere Telegram-ontvangers**: het chat-id-veld accepteert een komma-gescheiden lijst; per zoekwoord kun je een eigen chat (of lijst) instellen.
+- **Kenmerkfilter per zoekwoord**: minstens één opgegeven woord moet in de kenmerken (conditie, maat, …) voorkomen.
+- **Meldingen filteren** op soort, zoekwoord en tekst.
+- **Nieuw sinds je laatste bezoek**: op de resultatenpagina en in het recent-blok worden advertenties gemarkeerd die zijn bijgekomen sinds je die pagina voor het laatst opende (per browser, via localStorage).
+- **Marketplace per zoekwoord**: Marktplaats.nl of 2dehands.be per zoekwoord, los van de globale keuze.
+
 ## v24
 
 - Fix: de Trivy-scan in CI verwees naar een niet-bestaande versie-tag (`0.28.0`); nu `v0.36.0`. Geen functionele wijzigingen.

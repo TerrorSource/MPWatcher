@@ -386,3 +386,53 @@ def test_item_to_ad_extracts_seller_url_attributes_description():
     assert ad["description"].startswith("Weinig gereden, altijd binnen gestald.") and len(ad["description"]) <= 300
     caption = notify._ad_caption(ad, term="racefiets")
     assert "Kenmerken = Zo goed als nieuw · 58 cm" in caption and "Weinig gereden" in caption
+
+
+# --- v25 ----------------------------------------------------------------------
+
+def test_attribute_filter_in_search(monkeypatch, keyword):
+    db.update_keyword_fields(keyword["id"], attr_terms="58 cm, maat 58")
+    kw = db.get_keyword(keyword["id"])
+    ads = [dict(_ad("k1", "Racefiets A", 1000), attributes="Zo goed als nieuw · 58 cm"),
+           dict(_ad("k2", "Racefiets B", 1000), attributes="Gebruikt · 56 cm"),
+           dict(_ad("k3", "Racefiets C", 1000), attributes="")]
+    monkeypatch.setattr(marketplace, "fetch_market_results", _fetch(ads))
+    assert scheduler.run_search_for_keyword(kw, _settings()) == (1, 1)
+    assert [r["title"] for r in db.get_results_for_keyword(kw["id"])] == ["Racefiets A"]
+
+
+def test_marketplace_and_chat_override_per_keyword(monkeypatch, telegram_log, keyword):
+    db.update_keyword_fields(keyword["id"], marketplace="2dehands", telegram_chat_id="999")
+    kw = db.get_keyword(keyword["id"])
+    seen = {}
+
+    def fake_fetch(term, settings, limit, category_id=None, category_parent_id=None):
+        seen["marketplace"] = settings["marketplace"]
+        return [_ad("o1", "Koersfiets", 1000)]
+    monkeypatch.setattr(marketplace, "fetch_market_results", fake_fetch)
+
+    sent_to = []
+    monkeypatch.setattr(notify, "_telegram_post", lambda method, payload, settings, label="": sent_to.append(settings["telegram_chat_id"]) or True)
+    scheduler.run_search_for_keyword(kw, _settings(marketplace="marktplaats", telegram_chat_id="123"))
+    assert seen["marketplace"] == "2dehands"
+    assert sent_to == ["999"]
+
+    merged = scheduler.keyword_settings({"marketplace": "", "telegram_chat_id": ""}, {"marketplace": "marktplaats", "telegram_chat_id": "123"})
+    assert merged["marketplace"] == "marktplaats" and merged["telegram_chat_id"] == "123"
+
+
+def test_telegram_sends_to_all_chat_ids(monkeypatch, real_telegram_post):
+    class Resp:
+        status_code, ok, text = 200, True, "ok"
+
+    posted = []
+
+    class FakeHTTP:
+        def post(self, url, json=None, timeout=10):
+            posted.append(json["chat_id"])
+            return Resp()
+    monkeypatch.setattr(notify, "HTTP", FakeHTTP())
+    assert notify.parse_chat_ids(" 12, -34;56  78 ,12") == ["12", "-34", "56", "78"]
+    assert real_telegram_post("sendMessage", {"text": "hi"}, {"telegram_bot_id": "b", "telegram_chat_id": "12, -34"}) is True
+    assert posted == ["12", "-34"]
+    assert real_telegram_post("sendMessage", {"text": "hi"}, {"telegram_bot_id": "b", "telegram_chat_id": ""}) is False
