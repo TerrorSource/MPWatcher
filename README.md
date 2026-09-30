@@ -231,6 +231,10 @@ Via het **Overzicht** in de GUI:
   - Interval  
   - Min. / max. prijs  
   - Limiet per zoekopdracht  
+  - **Relevantiefilter** (globaal, Configuratie → Zoekinstellingen) — de
+    marketplace zoekt ruim; standaard moeten alle woorden van de zoekterm in
+    titel + omschrijving staan, anders wordt de advertentie genegeerd.
+    Aanhalingstekens in de zoekterm hebben geen effect en worden verwijderd.  
   - **Uitsluitwoorden** — advertenties met één van deze woorden in de titel
     worden genegeerd (bijv. `gezocht, gevraagd` om vraag-advertenties weg te filteren)  
   - **Moet bevatten** — minstens één van deze woorden moet in de titel staan

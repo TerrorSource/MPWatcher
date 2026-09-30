@@ -17,7 +17,14 @@ from .config import (
     MarketplaceError,
     logger,
 )
-from .utils import attributes_pass_filter, format_cents, int_or_none, normalize_title, title_passes_filters
+from .utils import (
+    ad_matches_term,
+    attributes_pass_filter,
+    format_cents,
+    int_or_none,
+    normalize_title,
+    title_passes_filters,
+)
 
 # ------------------------------------------------------------------------------
 # Status van de worker
@@ -173,6 +180,9 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
         if not title_passes_filters(ad.get("title", ""), keyword.get("include_terms"), keyword.get("exclude_terms")):
             continue
         if not attributes_pass_filter(ad.get("attributes", ""), keyword.get("attr_terms")):
+            continue
+        if not ad_matches_term(term, ad.get("title", ""), ad.get("description", ""), settings.get("match_mode", "text")):
+            logger.debug("Niet relevant voor '%s': %s", term, ad.get("title"))
             continue
         if blocked_titles and normalize_title(ad.get("title")) in blocked_titles:
             continue

@@ -80,6 +80,13 @@ DEFAULT_SETTINGS = {
     # Gereserveerde advertenties overslaan (meestal al verkocht)
     "skip_reserved": False,
 
+    # Relevantiefilter: de marketplace zoekt 'fuzzy' ("cardiff marathon" geeft
+    # alles met "marathon"). Modes:
+    #   text  = alle woorden van de zoekterm moeten in titel + omschrijving staan
+    #   title = alle woorden moeten in de titel staan (strenger)
+    #   off   = alles wat de marketplace teruggeeft (oude gedrag)
+    "match_mode": "text",
+
     # Advertenties van de afgelopen N dagen dagelijks controleren op
     # verwijderd/verlopen (0 = uit).
     "expiry_check_days": 7,

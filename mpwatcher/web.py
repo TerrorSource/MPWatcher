@@ -23,6 +23,7 @@ from .utils import (
     form_bool,
     format_relative_time,
     int_or_none,
+    clean_search_term,
     normalize_terms,
     normalize_title,
 )
@@ -115,7 +116,7 @@ def index():
 def add_keyword():
     settings = db.load_settings()
 
-    term = (request.form.get("term") or "").strip()
+    term = clean_search_term(request.form.get("term"))
     if not term:
         flash("Zoekwoord mag niet leeg zijn.", "error")
         return redirect(url_for("index"))
@@ -151,7 +152,7 @@ def add_keyword():
 def edit_keyword(keyword_id: int):
     fields: dict = {}
 
-    term = (request.form.get("term") or "").strip()
+    term = clean_search_term(request.form.get("term"))
     if term:
         fields["term"] = term
 
@@ -448,6 +449,8 @@ def config_save_timer():
         updates["expiry_check_days"] = max(0, min(90, expiry))
 
     updates["skip_reserved"] = form_bool(request.form.get("skip_reserved"))
+    mode = (request.form.get("match_mode") or "text").strip().lower()
+    updates["match_mode"] = mode if mode in ("text", "title", "off") else "text"
     updates["sleep_mode"] = form_bool(request.form.get("sleep_mode"))
     updates["sleep_start"] = request.form.get("sleep_start") or "23:00"
     updates["sleep_end"] = request.form.get("sleep_end") or "07:00"

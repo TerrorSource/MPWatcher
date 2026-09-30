@@ -101,6 +101,38 @@ def format_relative_time(iso_str: str | None) -> str:
     return dt.strftime("%d-%m-%Y")
 
 
+_QUOTES = "\"'“”‘’«»"
+
+
+def clean_search_term(term: str | None) -> str:
+    """Aanhalingstekens weghalen (de marketplace doet er niets mee) en witruimte normaliseren."""
+    t = (term or "").strip()
+    t = t.translate({ord(c): " " for c in _QUOTES})
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def term_words(term: str | None) -> list[str]:
+    """Losse woorden van de zoekterm, zonder leestekens, in kleine letters."""
+    words = re.findall(r"[0-9a-zà-ÿ]+", clean_search_term(term).casefold())
+    return [w for w in words if len(w) >= 2]
+
+
+def ad_matches_term(term: str | None, title: str | None, description: str | None, mode: str) -> bool:
+    """Relevantiefilter tegen 'fuzzy' zoekresultaten: alle woorden van de
+    zoekterm moeten voorkomen in de titel (mode 'title') of in titel +
+    omschrijving (mode 'text'). Mode 'off' = alles accepteren."""
+    if mode == "off":
+        return True
+    words = term_words(term)
+    if not words:
+        return True
+    haystack = (title or "")
+    if mode != "title":
+        haystack += " " + (description or "")
+    haystack = haystack.casefold()
+    return all(w in haystack for w in words)
+
+
 def attributes_pass_filter(attributes: str | None, attr_terms: str | None) -> bool:
     """Kenmerkfilter: minstens één van de opgegeven woorden moet in de
     kenmerken ('Zo goed als nieuw · 58 cm') voorkomen. Geen woorden = alles."""

@@ -3,6 +3,11 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v26
+
+- **Relevantiefilter** (Configuratie → Zoekinstellingen): de marketplace zoekt ruim — "cardiff marathon" leverde ook een Amsterdam-marathonboek en Feyenoord-shorts op. Nu moeten standaard alle woorden van de zoekterm in titel + omschrijving voorkomen; strenger (alleen titel) of uit is instelbaar.
+- Aanhalingstekens in een zoekterm worden genegeerd (de marketplace deed er toch niets mee) en de term wordt genormaliseerd bij toevoegen/bewerken.
+
 ## v25
 
 - **Trivy blokkeert nu écht**: het image wordt eerst lokaal gebouwd en gescand; alleen zonder CRITICAL-kwetsbaarheden (met fix beschikbaar) wordt het multi-arch gebouwd en gepusht. HIGH wordt informatief gerapporteerd.

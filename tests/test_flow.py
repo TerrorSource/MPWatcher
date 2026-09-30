@@ -40,7 +40,8 @@ def keyword():
 
 def _settings(**overrides):
     s = db.load_settings()
-    s.update({"telegram_bot_id": "bot", "telegram_chat_id": "chat", "repost_dedup_days": 0})
+    # match_mode uit: deze tests gebruiken fictieve titels die niet op "flow-test" lijken
+    s.update({"telegram_bot_id": "bot", "telegram_chat_id": "chat", "repost_dedup_days": 0, "match_mode": "off"})
     s.update(overrides)
     return s
 
@@ -172,7 +173,7 @@ def test_digest_when_many_new_ads(monkeypatch, telegram_log, keyword):
 def test_scheduler_iteration_runs_due_keywords(monkeypatch, telegram_log):
     db.init_db()
     monkeypatch.setattr(scheduler.time_module, "sleep", lambda s: None)
-    db.save_settings({"telegram_bot_id": "bot", "telegram_chat_id": "chat", "repost_dedup_days": 0})
+    db.save_settings({"telegram_bot_id": "bot", "telegram_chat_id": "chat", "repost_dedup_days": 0, "match_mode": "off"})
 
     now = datetime.now()
     due = db.add_keyword_row("due", 15, None, None, 5)
@@ -436,3 +437,24 @@ def test_telegram_sends_to_all_chat_ids(monkeypatch, real_telegram_post):
     assert real_telegram_post("sendMessage", {"text": "hi"}, {"telegram_bot_id": "b", "telegram_chat_id": "12, -34"}) is True
     assert posted == ["12", "-34"]
     assert real_telegram_post("sendMessage", {"text": "hi"}, {"telegram_bot_id": "b", "telegram_chat_id": ""}) is False
+
+
+# --- v26: relevantiefilter in de zoekactie -----------------------------------
+
+def test_irrelevant_fuzzy_results_are_dropped(monkeypatch, keyword):
+    db.update_keyword_fields(keyword["id"], term="cardiff marathon")
+    kw = db.get_keyword(keyword["id"])
+    ads = [
+        dict(_ad("f1", "Finish as one - Amsterdam Marathon - 50 years", 0), description="boek"),
+        dict(_ad("f2", "Startbewijs halve marathon eindhoven", 5000), description="1 startnummer"),
+        dict(_ad("f3", "Startbewijs Cardiff Half Marathon 2027", 8000), description=""),
+        dict(_ad("f4", "Startbewijs marathon", 8000), description="Cardiff, 5 oktober, overdraagbaar"),
+    ]
+    monkeypatch.setattr(marketplace, "fetch_market_results", _fetch(ads))
+    assert scheduler.run_search_for_keyword(kw, _settings(match_mode="text")) == (2, 2)
+    assert sorted(r["title"] for r in db.get_results_for_keyword(kw["id"])) == ["Startbewijs Cardiff Half Marathon 2027", "Startbewijs marathon"]
+
+    db.reset_results_for_keyword(kw["id"])
+    assert scheduler.run_search_for_keyword(kw, _settings(match_mode="title"))[0] == 1
+    db.reset_results_for_keyword(kw["id"])
+    assert scheduler.run_search_for_keyword(kw, _settings(match_mode="off"))[0] == 4

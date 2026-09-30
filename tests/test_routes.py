@@ -391,3 +391,21 @@ def test_results_and_recent_have_new_since_markers(client):
     html = client.get("/").get_data(as_text=True)
     assert 'data-first-seen="' in html and "mpw-seen-recent" in html
     client.post(f"/keyword/{kid}/delete")
+
+
+# --- v26 ----------------------------------------------------------------------
+
+def test_quotes_stripped_and_match_mode_saved(client):
+    client.post("/keyword/add", data={"term": '"feyenoord  marathon"'})
+    kid = _last_keyword_id()
+    assert db.get_keyword(kid)["term"] == "feyenoord marathon"
+    client.post(f"/keyword/{kid}/edit", data={"term": "'cardiff marathon'"})
+    assert db.get_keyword(kid)["term"] == "cardiff marathon"
+    client.post(f"/keyword/{kid}/delete")
+
+    assert db.load_settings()["match_mode"] == "text"
+    client.post("/config/timer", data={"marketplace": "marktplaats", "match_mode": "title", "sleep_mode": "nee"})
+    assert db.load_settings()["match_mode"] == "title"
+    client.post("/config/timer", data={"marketplace": "marktplaats", "match_mode": "onzin", "sleep_mode": "nee"})
+    assert db.load_settings()["match_mode"] == "text"
+    assert 'name="match_mode"' in client.get("/config").get_data(as_text=True)

@@ -190,3 +190,22 @@ def test_fetch_categories_parses_facets(monkeypatch):
 def test_backoff_factor():
     assert [scheduler.backoff_factor(n) for n in (0, 1, 2, 3)] == [1, 2, 4, 8]
     assert scheduler.backoff_factor(20) == 256  # begrensd; het plafond in uren zit in effective_interval
+
+
+# --- v26: relevantiefilter ---------------------------------------------------
+
+def test_clean_search_term_and_words():
+    assert utils.clean_search_term('  "feyenoord   marathon" ') == "feyenoord marathon"
+    assert utils.term_words("Cardiff-Marathon 2027!") == ["cardiff", "marathon", "2027"]
+    assert utils.term_words("a b") == []  # woorden korter dan 2 tekens tellen niet
+
+
+def test_ad_matches_term_modes():
+    m = utils.ad_matches_term
+    assert m("cardiff marathon", "Finish as one - Amsterdam Marathon", "boek", "text") is False
+    assert m("cardiff marathon", "Startbewijs Cardiff Half Marathon", "", "text") is True
+    assert m("cardiff marathon", "Startbewijs marathon", "loopt in Cardiff op 5 oktober", "text") is True
+    assert m("cardiff marathon", "Startbewijs marathon", "loopt in Cardiff", "title") is False
+    assert m('"feyenoord marathon"', "Feyenoord short 1999 XXL", "voetbalshort", "text") is False
+    assert m("feyenoord marathon", "FEYENOORD short", "loop mee met de Marathon", "off") is True
+    assert m("", "iets", "", "text") is True

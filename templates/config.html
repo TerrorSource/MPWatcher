@@ -52,6 +52,15 @@
         </div>
 
         <div class="form-field">
+          <label class="form-label">Relevantiefilter <span>de marketplace zoekt ruim: "cardiff marathon" geeft ook alles met alleen "marathon"</span></label>
+          <select class="select" name="match_mode">
+            <option value="text" {% if settings.match_mode == "text" %}selected{% endif %}>Alle woorden in titel of omschrijving (aanbevolen)</option>
+            <option value="title" {% if settings.match_mode == "title" %}selected{% endif %}>Alle woorden in de titel (streng)</option>
+            <option value="off" {% if settings.match_mode == "off" %}selected{% endif %}>Uit — alles wat de marketplace teruggeeft</option>
+          </select>
+        </div>
+
+        <div class="form-field">
           <label class="form-label">Gereserveerde advertenties <span>zijn meestal al verkocht</span></label>
           <select class="select" name="skip_reserved">
             <option value="nee" {% if not settings.skip_reserved %}selected{% endif %}>Tonen en melden (met label)</option>

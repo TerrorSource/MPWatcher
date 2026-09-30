@@ -307,6 +307,9 @@ def load_settings() -> dict:
     expiry = int_or_none(merged.get("expiry_check_days"))
     merged["expiry_check_days"] = max(0, min(90, expiry)) if expiry is not None else 7
 
+    mode = str(merged.get("match_mode") or "text").strip().lower()
+    merged["match_mode"] = mode if mode in ("text", "title", "off") else "text"
+
     for key in ("blocked_sellers", "blocked_titles"):
         if not isinstance(merged.get(key), list):
             merged[key] = []
