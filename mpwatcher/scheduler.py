@@ -19,7 +19,6 @@ from .config import (
 )
 from .utils import (
     ad_matches_term,
-    attributes_pass_filter,
     format_cents,
     int_or_none,
     normalize_title,
@@ -134,15 +133,11 @@ def format_next_run(next_dt: Optional[datetime], now: datetime) -> str:
 # ------------------------------------------------------------------------------
 
 def keyword_settings(keyword: dict, settings: dict) -> dict:
-    """Globale instellingen met de overrides van één zoekwoord
-    (marketplace en Telegram-chat)."""
+    """Globale instellingen met de override van één zoekwoord (marketplace)."""
     merged = dict(settings)
     choice = (keyword.get("marketplace") or "").strip().lower()
     if choice in ("marktplaats", "2dehands"):
         merged["marketplace"] = choice
-    chat = (keyword.get("telegram_chat_id") or "").strip()
-    if chat:
-        merged["telegram_chat_id"] = chat
     return merged
 
 
@@ -178,8 +173,6 @@ def run_search_for_keyword(keyword: dict, settings: dict, manual: bool = False) 
         if max_price is not None and (cents is None or cents > max_price * 100):
             continue
         if not title_passes_filters(ad.get("title", ""), keyword.get("include_terms"), keyword.get("exclude_terms")):
-            continue
-        if not attributes_pass_filter(ad.get("attributes", ""), keyword.get("attr_terms")):
             continue
         if not ad_matches_term(term, ad.get("title", ""), ad.get("description", ""), settings.get("match_mode", "text")):
             logger.debug("Niet relevant voor '%s': %s", term, ad.get("title"))

@@ -3,6 +3,11 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v27
+
+- Overzicht opgeschoond: de velden *kenmerk* en *chat* per zoekwoord zijn verwijderd (de kenmerkfilter en de Telegram-chat per zoekwoord bestaan niet meer; de globale chat-id's uit de configuratie blijven gelden).
+- De titelfilters heten nu **Negeer advertenties met** en **Alleen advertenties met**, met een ⓘ-ballon die uitlegt wat ze doen.
+
 ## v26
 
 - **Relevantiefilter** (Configuratie → Zoekinstellingen): de marketplace zoekt ruim — "cardiff marathon" leverde ook een Amsterdam-marathonboek en Feyenoord-shorts op. Nu moeten standaard alle woorden van de zoekterm in titel + omschrijving voorkomen; strenger (alleen titel) of uit is instelbaar.

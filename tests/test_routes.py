@@ -341,25 +341,6 @@ def test_results_show_seller_link_attributes_and_expired(client):
 
 # --- v25 ----------------------------------------------------------------------
 
-def test_keyword_overrides_saved_and_rendered(client):
-    client.post("/keyword/add", data={"term": "override-test", "attr_terms": "Zo goed als nieuw, 58 CM"})
-    kid = _last_keyword_id()
-    assert db.get_keyword(kid)["attr_terms"] == "zo goed als nieuw, 58 cm"
-
-    client.post(f"/keyword/{kid}/edit", data={
-        "attr_terms": "58 cm", "telegram_chat_id": "111; 222 333", "marketplace": "2dehands",
-    })
-    kw = db.get_keyword(kid)
-    assert (kw["attr_terms"], kw["telegram_chat_id"], kw["marketplace"]) == ("58 cm", "111, 222, 333", "2dehands")
-
-    html = client.get("/").get_data(as_text=True)
-    assert 'value="111, 222, 333"' in html and "www.2dehands.be" in html  # zoeklink volgt de site-keuze
-    assert 'name="attr_terms"' in html
-
-    client.post(f"/keyword/{kid}/edit", data={"marketplace": "onzin"})
-    assert db.get_keyword(kid)["marketplace"] == ""
-    client.post(f"/keyword/{kid}/delete")
-
 
 def test_notifications_filters(client):
     client.post("/keyword/add", data={"term": "filter-a"})
@@ -409,3 +390,19 @@ def test_quotes_stripped_and_match_mode_saved(client):
     client.post("/config/timer", data={"marketplace": "marktplaats", "match_mode": "onzin", "sleep_mode": "nee"})
     assert db.load_settings()["match_mode"] == "text"
     assert 'name="match_mode"' in client.get("/config").get_data(as_text=True)
+
+
+def test_keyword_marketplace_override_and_help_balloons(client):
+    client.post("/keyword/add", data={"term": "override-test", "attr_terms": "genegeerd", "telegram_chat_id": "999"})
+    kid = _last_keyword_id()
+    client.post(f"/keyword/{kid}/edit", data={"marketplace": "2dehands", "attr_terms": "x", "telegram_chat_id": "1"})
+    kw = db.get_keyword(kid)
+    assert kw["marketplace"] == "2dehands"
+    assert kw["attr_terms"] == "" and kw["telegram_chat_id"] == ""  # velden bestaan niet meer in de UI/logica
+    html = client.get("/").get_data(as_text=True)
+    assert "www.2dehands.be" in html
+    assert 'name="attr_terms"' not in html and 'name="telegram_chat_id"' not in html
+    assert "Negeer met" in html and "Alleen met" in html and 'class="help" data-tip=' in html
+    client.post(f"/keyword/{kid}/edit", data={"marketplace": "onzin"})
+    assert db.get_keyword(kid)["marketplace"] == ""
+    client.post(f"/keyword/{kid}/delete")

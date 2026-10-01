@@ -132,7 +132,6 @@ def add_keyword():
         limit_per_run=settings["default_limit_per_run"],
         exclude_terms=request.form.get("exclude_terms", ""),
         include_terms=request.form.get("include_terms", ""),
-        attr_terms=request.form.get("attr_terms", ""),
     )
 
     # Direct een eerste (stille) zoekactie zodat de resultatenpagina meteen
@@ -179,10 +178,6 @@ def edit_keyword(keyword_id: int):
         fields["exclude_terms"] = normalize_terms(request.form.get("exclude_terms"))
     if "include_terms" in request.form:
         fields["include_terms"] = normalize_terms(request.form.get("include_terms"))
-    if "attr_terms" in request.form:
-        fields["attr_terms"] = normalize_terms(request.form.get("attr_terms"))
-    if "telegram_chat_id" in request.form:
-        fields["telegram_chat_id"] = ", ".join(notify.parse_chat_ids(request.form.get("telegram_chat_id")))
     if "marketplace" in request.form:
         choice = (request.form.get("marketplace") or "").strip().lower()
         fields["marketplace"] = choice if choice in ("marktplaats", "2dehands") else ""

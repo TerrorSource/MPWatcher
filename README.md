@@ -20,8 +20,8 @@ MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-a
 - **Advertenties negeren** op titel, naast het blokkeren van verkopers  
 - **Herplaatsingen** (zelfde advertentie opnieuw geplaatst) worden niet nogmaals gemeld  
 - **Verlopen advertenties** worden dagelijks gedetecteerd en gemarkeerd  
-- **Kenmerkfilter** (conditie, maat, …) en **marketplace** per zoekwoord  
-- Telegram naar **meerdere ontvangers**, ook per zoekwoord instelbaar  
+- **Marketplace** per zoekwoord instelbaar  
+- Telegram naar **meerdere ontvangers**  
 - Markering van wat **nieuw is sinds je laatste bezoek**  
 - Meldingen met plaats, afstand, kenmerken (conditie, maat) en een stukje omschrijving  
 - Veel nieuwe advertenties tegelijk? Dan één **samenvattend bericht** i.p.v. losse meldingen  
@@ -175,9 +175,7 @@ Vul de Telegram gegevens in onder **Configuratie → Telegram**:
 
 - Telegram Bot Token  
 - Telegram Chat ID('s) — één of meer, komma-gescheiden; elk bericht gaat
-  naar alle ontvangers. Per zoekwoord kun je in het overzicht (veld *chat*)
-  een afwijkende ontvanger instellen, bijv. de tickets naar je partner en de
-  fietsen naar jezelf.  
+  naar alle ontvangers.  
 - **Melding bij prijsverlaging** (aan/uit) — stuurt een 📉-melding wanneer
   een al bekende advertentie in prijs zakt  
 - **Samenvatting vanaf** — vindt één zoekactie minstens dit aantal nieuwe
@@ -235,13 +233,10 @@ Via het **Overzicht** in de GUI:
     marketplace zoekt ruim; standaard moeten alle woorden van de zoekterm in
     titel + omschrijving staan, anders wordt de advertentie genegeerd.
     Aanhalingstekens in de zoekterm hebben geen effect en worden verwijderd.  
-  - **Uitsluitwoorden** — advertenties met één van deze woorden in de titel
+  - **Negeer advertenties met** — advertenties met één van deze woorden in de titel
     worden genegeerd (bijv. `gezocht, gevraagd` om vraag-advertenties weg te filteren)  
-  - **Moet bevatten** — minstens één van deze woorden moet in de titel staan
+  - **Alleen advertenties met** — minstens één van deze woorden moet in de titel staan
     (bijv. `startbewijs, ticket`)  
-  - **Kenmerk moet bevatten** — minstens één van deze woorden moet in de
-    kenmerken van de advertentie staan (bijv. `zo goed als nieuw, 58 cm`)  
-  - **Chat** — eigen Telegram-ontvanger(s) voor dit zoekwoord  
   - **Site** — Marktplaats.nl of 2dehands.be voor dit zoekwoord  
   - **Categorie** — klik op 📂 bij het zoekwoord en kies uit de categorieën
     die de marketplace voor die zoekterm kent (met aantallen). Een

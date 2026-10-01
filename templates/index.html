@@ -51,18 +51,19 @@
 
         <div class="form-grid">
           <div class="form-field">
-            <label class="form-label">Uitsluitwoorden <span>komma-gescheiden</span></label>
+            <label class="form-label">
+              Negeer advertenties met
+              <span class="help" data-tip="Staat één van deze woorden in de titel, dan wordt de advertentie overgeslagen en niet gemeld. Meerdere woorden scheiden met een komma. Handig om vraag-advertenties weg te filteren.">ⓘ</span>
+            </label>
             <input class="input" type="text" name="exclude_terms" placeholder="bijv. gezocht, gevraagd">
           </div>
           <div class="form-field">
-            <label class="form-label">Moet bevatten <span>één van, optioneel</span></label>
+            <label class="form-label">
+              Alleen advertenties met
+              <span class="help" data-tip="Minstens één van deze woorden moet in de titel staan, anders wordt de advertentie overgeslagen. Meerdere woorden scheiden met een komma. Leeg = geen eis.">ⓘ</span>
+            </label>
             <input class="input" type="text" name="include_terms" placeholder="bijv. startbewijs, ticket">
           </div>
-        </div>
-
-        <div class="form-field">
-          <label class="form-label">Kenmerk moet bevatten <span>één van, optioneel — conditie, maat, …</span></label>
-          <input class="input" type="text" name="attr_terms" placeholder="bijv. zo goed als nieuw, 58 cm">
         </div>
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:10px;">
@@ -200,34 +201,26 @@
                    class="btn btn-ghost" title="Open zoekopdracht op de marketplace">↗</a>
               </div>
 
-              <div class="filter-row">
-                <label title="Advertenties met één van deze woorden in de titel worden genegeerd">
-                  <span>zonder</span>
+              <div class="filter-row filter-row--stack">
+                <label>
+                  <span>Negeer met
+                    <span class="help" data-tip="Staat één van deze woorden in de titel, dan wordt de advertentie overgeslagen en niet gemeld. Komma-gescheiden. Bijv. 'gezocht, gevraagd' om vraag-advertenties weg te filteren.">ⓘ</span>
+                  </span>
                   <input class="input" type="text" name="exclude_terms" form="kw-edit-{{ kw.id }}"
-                         value="{{ kw.exclude_terms }}" placeholder="geen"
+                         value="{{ kw.exclude_terms }}" placeholder="bijv. gezocht, gevraagd"
                          onchange="this.form.submit()">
                 </label>
-                <label title="Minstens één van deze woorden moet in de titel staan">
-                  <span>met</span>
+                <label>
+                  <span>Alleen met
+                    <span class="help" data-tip="Minstens één van deze woorden moet in de titel staan, anders wordt de advertentie overgeslagen. Komma-gescheiden. Leeg = geen eis. Bijv. 'startbewijs, ticket'.">ⓘ</span>
+                  </span>
                   <input class="input" type="text" name="include_terms" form="kw-edit-{{ kw.id }}"
-                         value="{{ kw.include_terms }}" placeholder="alles"
+                         value="{{ kw.include_terms }}" placeholder="bijv. startbewijs, ticket"
                          onchange="this.form.submit()">
                 </label>
               </div>
 
               <div class="filter-row">
-                <label title="Minstens één van deze woorden moet in de kenmerken staan (conditie, maat, …)">
-                  <span>kenmerk</span>
-                  <input class="input" type="text" name="attr_terms" form="kw-edit-{{ kw.id }}"
-                         value="{{ kw.attr_terms }}" placeholder="alle"
-                         onchange="this.form.submit()">
-                </label>
-                <label title="Telegram-chat-id('s) voor dit zoekwoord, komma-gescheiden; leeg = de chat uit de configuratie">
-                  <span>chat</span>
-                  <input class="input" type="text" name="telegram_chat_id" form="kw-edit-{{ kw.id }}"
-                         value="{{ kw.telegram_chat_id }}" placeholder="standaard"
-                         onchange="this.form.submit()">
-                </label>
                 <label title="Marketplace voor dit zoekwoord; standaard = de keuze uit de configuratie">
                   <span>site</span>
                   <select class="select" name="marketplace" form="kw-edit-{{ kw.id }}" onchange="this.form.submit()">
