@@ -3,6 +3,10 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v29
+
+- Onderhoud: ruff 0.17.0 → 0.17.2 (lint, alleen ontwikkeling; neemt Dependabot-PR #18 over). Geen functionele wijzigingen.
+
 ## v28
 
 - Onderhoud: ruff 0.16.7 → 0.17.0 (lint, alleen ontwikkeling) en `actions/setup-python` v6 → v7 in CI. Geen functionele wijzigingen.
