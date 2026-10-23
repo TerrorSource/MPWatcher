@@ -3,6 +3,10 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v28
+
+- Onderhoud: ruff 0.16.7 → 0.17.0 (lint, alleen ontwikkeling) en `actions/setup-python` v6 → v7 in CI. Geen functionele wijzigingen.
+
 ## v27
 
 - Overzicht opgeschoond: de velden *kenmerk* en *chat* per zoekwoord zijn verwijderd (de kenmerkfilter en de Telegram-chat per zoekwoord bestaan niet meer; de globale chat-id's uit de configuratie blijven gelden).
