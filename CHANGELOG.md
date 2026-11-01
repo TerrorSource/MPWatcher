@@ -3,6 +3,10 @@
 Per versie de belangrijkste wijzigingen. De sectie van de actuele versie wordt
 door `commit-git.sh -r` als release-tekst op GitHub gebruikt.
 
+## v30
+
+- Onderhoud: pytest 9.1.1 → 9.2.0 en ruff 0.17.2 → 0.17.3 (alleen ontwikkeling; neemt Dependabot-PR's #19 en #20 over). Geen functionele wijzigingen.
+
 ## v29
 
 - Onderhoud: ruff 0.17.0 → 0.17.2 (lint, alleen ontwikkeling; neemt Dependabot-PR #18 over). Geen functionele wijzigingen.
