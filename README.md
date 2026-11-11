@@ -1,5 +1,23 @@
 # MPWatcher – Marktplaats Advertentie Watcher
 
+> ## ➡️ MPWatcher is opgegaan in MPManager
+>
+> Alle functies van MPWatcher zitten nu in
+> **[MPManager](https://github.com/TerrorSource/MPManager)**, als het tabblad
+> *Zoekopdrachten*. MPManager beheert daarnaast je eigen advertenties
+> (backuppen, herplaatsen, prijs aanpassen), zodat je nog maar één container
+> nodig hebt.
+>
+> **Overstappen:** stop MPWatcher, kopieer `results.db` uit de config-map van
+> MPWatcher naar de config-map van MPManager en start MPManager. Zoekwoorden,
+> resultaten, meldingenlog, instellingen en de Telegram-bot worden bij de eerste
+> start overgenomen. Zie de
+> [README van MPManager](https://github.com/TerrorSource/MPManager#zoekopdrachten).
+>
+> Deze repository is gearchiveerd en wordt niet meer bijgewerkt. De bestaande
+> image `ghcr.io/terrorsource/mpwatcher` blijft werken, maar krijgt geen updates
+> meer.
+
 MPWatcher is een Docker-based webapplicatie waarmee je automatisch Marktplaats-advertenties monitort op basis van zoekwoorden en **direct via Telegram meldingen ontvangt** bij nieuwe advertenties.
 
 ✅ Webinterface  
